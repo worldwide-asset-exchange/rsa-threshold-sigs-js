@@ -1,0 +1,23 @@
+import { KeyEncryption } from '../src';
+
+describe('KeyEncryption', () => {
+  let encryptedString: string;
+  const encoderPrivateKey = Buffer.from('43d299ea3e0904209c5791bf2732ad4fad5c152537936cb5da2fb8ad0fa0acef', 'hex');
+  const encoderPublicKey = Buffer.from('04e9e401a57ede70373fa2a7c2e11a76b2de2a5529d88365ddd9c70f642bf0985693a687bce224c387762b32337fdae37e66c384153719fef6f085bd906e28251d', 'hex');
+  const receiverPublicKey = Buffer.from('04db1657a95b941845ad3644b1694953cbf8579b38b4d028cf8a82d40daaa3a447e7748c336b47601ffacdf0c430a782862053d5a242426b8e7f213c793cbf0c5d', 'hex');
+  const receiverPrivateKey = Buffer.from('5fc532fe28d8c4a0823239cab5f046a6b43db4f4a424ea733ae56e8472801270', 'hex');
+
+  it('should encrypt with the receiver public key and encoder private key', async () => {
+    const keyEncryption = new KeyEncryption(encoderPrivateKey, receiverPublicKey);
+    encryptedString = keyEncryption.encrypt('Hello, world!');
+    expect(encryptedString.length).toBeGreaterThan(0);
+    expect(encryptedString).not.toBe('Hello, world!');
+    expect(encryptedString.split(':').length).toBe(2);
+  });
+
+  it('should decrypt with the receiver private key and encoder public key', async () => {
+    const keyEncryption = new KeyEncryption(receiverPrivateKey, encoderPublicKey);
+    const decrypted = keyEncryption.decrypt(encryptedString);
+    expect(decrypted).toBe('Hello, world!');
+  });
+});

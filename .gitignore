@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tgz
+
+# Generated key material — never commit real or sample keys
+generatedKeys/
+*.pem
+.env
