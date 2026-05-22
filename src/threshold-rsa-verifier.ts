@@ -76,6 +76,12 @@ export class ThresholdRSAVerifier {
 			msgBigIntToSign = msgBigIntToSign.multiply(this.vku.modPow(e, n)).mod(n);
 		}
 
+		// Reject an empty share set: an empty loop would otherwise return true
+		// vacuously, which a caller using this as a gate could misread as success.
+		if (sigShares.length === 0) {
+			return false;
+		}
+
 		// Calculate lifted message
 		const xt = msgBigIntToSign.modPow(new BigInteger('4'), n);
 
@@ -142,8 +148,18 @@ export class ThresholdRSAVerifier {
 		// Only use up to threshold shares if more provided
 		const selectedShares = shares.slice(0, this.threshold);
 
-		// Check for duplicate share indices
+		// Validate share indices are within the valid range [1, numParties].
+		// An out-of-range index (e.g. 0) would produce an incorrect Lagrange
+		// coefficient and must not be silently accepted.
 		const shareIndices = selectedShares.map(share => share.shareIndex);
+		for (const idx of shareIndices) {
+			if (!Number.isInteger(idx) || idx < 1 || idx > this.numParties) {
+				throw new Error(`Invalid share index ${idx}: must be an integer between 1 and ${this.numParties}`);
+			}
+		}
+
+		// Check for duplicate share indices (prevents reaching the threshold
+		// count by reusing a single party's share).
 		if (new Set(shareIndices).size !== shareIndices.length) {
 			throw new Error('Duplicate share indices detected');
 		}

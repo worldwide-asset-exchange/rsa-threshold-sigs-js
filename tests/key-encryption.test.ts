@@ -12,12 +12,21 @@ describe('KeyEncryption', () => {
     encryptedString = keyEncryption.encrypt('Hello, world!');
     expect(encryptedString.length).toBeGreaterThan(0);
     expect(encryptedString).not.toBe('Hello, world!');
-    expect(encryptedString.split(':').length).toBe(2);
+    expect(encryptedString.split(':').length).toBe(3);
   });
 
   it('should decrypt with the receiver private key and encoder public key', async () => {
     const keyEncryption = new KeyEncryption(receiverPrivateKey, encoderPublicKey);
     const decrypted = keyEncryption.decrypt(encryptedString);
     expect(decrypted).toBe('Hello, world!');
+  });
+
+  it('should reject a tampered ciphertext (authenticated encryption)', async () => {
+    const keyEncryption = new KeyEncryption(receiverPrivateKey, encoderPublicKey);
+    const [cypherText, iv, authTag] = encryptedString.split(':');
+    // Flip a byte of the ciphertext; GCM authentication must reject it.
+    const tamperedByte = (parseInt(cypherText.slice(0, 2), 16) ^ 0xff).toString(16).padStart(2, '0');
+    const tampered = `${tamperedByte}${cypherText.slice(2)}:${iv}:${authTag}`;
+    expect(() => keyEncryption.decrypt(tampered)).toThrow();
   });
 });

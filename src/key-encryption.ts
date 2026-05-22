@@ -2,7 +2,8 @@ import secp256k1 from 'secp256k1';
 import crypto from 'crypto';
 
 export class KeyEncryption {
-	public static ALGORITHM = 'aes-256-cbc';
+	public static ALGORITHM = 'aes-256-gcm';
+	private static IV_LENGTH = 12; // 96-bit nonce, recommended for GCM
 	private _encoderPrivateKey: Buffer;
 	private _receiverPublicKey: Buffer;
 	private _encryptionKey: Buffer;
@@ -22,23 +23,26 @@ export class KeyEncryption {
 		return pubKey
 	}
 
-  encrypt(textToEncrypt: string | Buffer, iv = crypto.randomBytes(16)) {
-    let cipher = crypto.createCipheriv(KeyEncryption.ALGORITHM, this._encryptionKey, iv);
-    let encrypted = cipher.update(Buffer.from(textToEncrypt));
+  encrypt(textToEncrypt: string | Buffer, iv = crypto.randomBytes(KeyEncryption.IV_LENGTH)) {
+    const cipher = crypto.createCipheriv(KeyEncryption.ALGORITHM, this._encryptionKey, iv) as crypto.CipherGCM;
+    const encrypted = Buffer.concat([cipher.update(Buffer.from(textToEncrypt)), cipher.final()]);
+    const authTag = cipher.getAuthTag();
 
-    encrypted = Buffer.concat([encrypted, cipher.final()]);
-
-    return `${encrypted.toString('hex')}:${iv.toString('hex')}`;
+    return `${encrypted.toString('hex')}:${iv.toString('hex')}:${authTag.toString('hex')}`;
   }
 
 	decrypt(encryptedPayload: string) {
-		let [cypherText, decryptionIV] = encryptedPayload.split(':');
-		let iv = Buffer.from(decryptionIV.toString(), 'hex');
-		let encryptedData = Buffer.from(cypherText, 'hex');
-		let decipher = crypto.createDecipheriv(KeyEncryption.ALGORITHM, this._encryptionKey, iv);
+		const [cypherText, decryptionIV, authTagHex] = encryptedPayload.split(':');
+		if (!cypherText || !decryptionIV || !authTagHex) {
+			throw new Error('Invalid encrypted payload: expected "ciphertext:iv:authTag"');
+		}
+		const iv = Buffer.from(decryptionIV, 'hex');
+		const encryptedData = Buffer.from(cypherText, 'hex');
+		const decipher = crypto.createDecipheriv(KeyEncryption.ALGORITHM, this._encryptionKey, iv) as crypto.DecipherGCM;
+		// Authenticates the ciphertext; final() throws if it has been tampered with.
+		decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
 
-		let decrypted = decipher.update(encryptedData);
-		decrypted = Buffer.concat([decrypted, decipher.final()]);
+		const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
 
 		return decrypted.toString();
   }

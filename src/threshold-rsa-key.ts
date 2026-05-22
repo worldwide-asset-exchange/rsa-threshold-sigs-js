@@ -1,4 +1,5 @@
-import { randomBigInt, BigInteger, generateSafePrime, randomBigIntCoprime, jacobiSymbol, isPrime, safeFactorial } from './utils';
+import crypto from 'crypto';
+import { randomBigInt, BigInteger, generateSafePrime, randomBigIntCoprime, jacobiSymbol, safeFactorial } from './utils';
 
 export type ThresholdRSAKeyConfig = {
 	bits: number,
@@ -52,11 +53,11 @@ export class ThresholdRSAKey {
 		}
 
 		if (this._config.e) {
-			// Shoup's paper requires e > l (number of parties)
-			const e = new BigInteger(this._config.e.toString(), 10);
-
-			// Verify e is prime (required by Shoup's protocol)
-			if (!isPrime(e)) {
+			// Verify e is prime (required by Shoup's protocol). Use Node's native
+			// primality check rather than the in-house Miller-Rabin for robustness.
+			// (Shoup's paper additionally requires e > l, the number of parties,
+			// which is enforced in validateThresholdParams once numParties is known.)
+			if (!crypto.checkPrimeSync(BigInt(this._config.e))) {
 				throw new Error(`RSA exponent e (${this._config.e}) must be prime`);
 			}
 		} else {

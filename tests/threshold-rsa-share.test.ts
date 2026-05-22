@@ -76,7 +76,9 @@ describe('ThresholdRSAShare ThresholdRSAVerifier', () => {
       // verify signature shares and proofs
       const verifyResult = thresholdRSAVerifier.verifySharesHash(msgBigInt, [signatureShare]);
       expect(verifyResult).toBe(true);
-      if (Math.random()*1000 >= 150) {
+      // Collect a random subset of shares, but always keep at least `threshold`
+      // so the combine step below is deterministic and never under-supplied.
+      if (collectedShares.length < threshold || Math.random()*1000 >= 150) {
         collectedShares.push(signatureShare);
       }
 
