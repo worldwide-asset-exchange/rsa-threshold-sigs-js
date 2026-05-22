@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { KeyEncryption } from '../src';
 
 describe('KeyEncryption', () => {
@@ -28,5 +29,18 @@ describe('KeyEncryption', () => {
     const tamperedByte = (parseInt(cypherText.slice(0, 2), 16) ^ 0xff).toString(16).padStart(2, '0');
     const tampered = `${tamperedByte}${cypherText.slice(2)}:${iv}:${authTag}`;
     expect(() => keyEncryption.decrypt(tampered)).toThrow();
+  });
+
+  it('should still decrypt a legacy 2-part (AES-256-CBC) payload from versions < 1.3', async () => {
+    // Build a legacy-format payload using the same symmetric key the class derives.
+    const encoder = new KeyEncryption(encoderPrivateKey, receiverPublicKey);
+    const symmetricKey = (encoder as any)._encryptionKey as Buffer;
+    const legacyIv = crypto.randomBytes(16);
+    const legacyCipher = crypto.createCipheriv(KeyEncryption.LEGACY_ALGORITHM, symmetricKey, legacyIv);
+    const ct = Buffer.concat([legacyCipher.update(Buffer.from('Hello, world!')), legacyCipher.final()]);
+    const legacyPayload = `${ct.toString('hex')}:${legacyIv.toString('hex')}`;
+
+    const receiver = new KeyEncryption(receiverPrivateKey, encoderPublicKey);
+    expect(receiver.decrypt(legacyPayload)).toBe('Hello, world!');
   });
 });

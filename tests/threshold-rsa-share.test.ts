@@ -195,6 +195,41 @@ describe('ThresholdRSAShare ThresholdRSAVerifier', () => {
       thresholdRSAVerifier.verifySignatureHash(msgBigInt, collectedShares);
     }).toThrow('Duplicate share indices detected');
   });
+
+  it('should reject an out-of-range share index', async () => {
+    const message = 'test message for index range validation';
+    let msgBigInt = new BigInteger('da5f53a808910d45b50eea5d4ddf6a90e1951f10b9bb711ad0a75f6f55c7fe9f', 16);
+
+    // Build `threshold` distinct shares, but force the first one's shareIndex to
+    // 0, which is outside the valid [1, numParties] range.
+    const collectedShares: RSASignatureShare[] = [];
+    for (let i = 0; i < threshold; i++) {
+      const shareInstance = new ThresholdRSAShare({
+        bits,
+        publicKey: shares.publicKey,
+        sharedKey: shares.sharedKey.shares[i],
+        vku: shares.sharedKey.vku,
+        verificationKey: shares.sharedKey.v,
+        verificationKeyShare: shares.sharedKey.verificationKeys[i],
+      });
+      const signResult = shareInstance.signMessage(message);
+      collectedShares.push({
+        signatureShare: signResult.signatureShare,
+        proof: signResult.proof,
+        sharedVerificationKey: shares.sharedKey.verificationKeys[i],
+        shareIndex: i === 0 ? 0 : i + 1, // index 0 is out of range
+      });
+    }
+
+    expect(() => {
+      thresholdRSAVerifier.verifySignatureHash(msgBigInt, collectedShares);
+    }).toThrow('Invalid share index 0');
+  });
+
+  it('should reject an empty share set in verifySharesHash (no vacuous true)', async () => {
+    const msgBigInt = new BigInteger('da5f53a808910d45b50eea5d4ddf6a90e1951f10b9bb711ad0a75f6f55c7fe9f', 16);
+    expect(thresholdRSAVerifier.verifySharesHash(msgBigInt, [])).toBe(false);
+  });
 });
 
 // Skip because we disable Jacobi symbol check so that it not compatible with CPP implementation
