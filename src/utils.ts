@@ -27,27 +27,38 @@ export function modPowNative(base, exponent, modulus) {
   }
   return result;
 }
-// Generate a random BigInt less than n
-export function randomBigInt(n: typeof BigInteger): typeof BigInteger {
+// Generate a uniformly random BigInt in [0, n) via rejection sampling.
+// Allocates ceil(bitLength/8) bytes and masks the excess high bits so each
+// candidate spans the full bit length of n before the rejection check. Using
+// floor(bitLength/8) (as a previous version did) silently truncated values
+// whenever n.bitLength() was not a multiple of 8, biasing the output to a
+// strictly smaller range and never exercising the rejection loop.
+function uniformRandomBelow(n: typeof BigInteger): typeof BigInteger {
+	const bits = n.bitLength();
+	const numBytes = Math.ceil(bits / 8);
+	const excessBits = numBytes * 8 - bits;
 	let result: typeof BigInteger;
 	do {
-		const numBytes = Math.floor(n.bitLength() / 8);
-		const randomBytes = forge.random.getBytesSync(numBytes);
-		const randomHex = forge.util.bytesToHex(randomBytes);
-		result = new BigInteger(randomHex, 16);
+		const bytes = Buffer.from(forge.util.bytesToHex(forge.random.getBytesSync(numBytes)), 'hex');
+		// Clear the high bits that overflow n's bit length so the candidate is
+		// uniform over [0, 2^bits) rather than [0, 2^(numBytes*8)).
+		bytes[0] &= 0xff >> excessBits;
+		result = new BigInteger(bytes.toString('hex'), 16);
 	} while (result.compareTo(n) >= 0);
 	return result;
 }
 
 // Generate a random BigInt less than n
+export function randomBigInt(n: typeof BigInteger): typeof BigInteger {
+	return uniformRandomBelow(n);
+}
+
+// Generate a random BigInt in [0, n) that is coprime with n
 export function randomBigIntCoprime(n: typeof BigInteger): typeof BigInteger {
 	let random: typeof BigInteger;
 	do {
-		const numBytes = Math.floor(n.bitLength() / 8);
-		const randomBytes = forge.random.getBytesSync(numBytes);
-		const randomHex = forge.util.bytesToHex(randomBytes);
-		random = new BigInteger(randomHex, 16);
-	} while (random.gcd(n).compareTo(BigInteger.ONE) !== 0 || random.compareTo(n) >= 0);
+		random = uniformRandomBelow(n);
+	} while (random.gcd(n).compareTo(BigInteger.ONE) !== 0);
 	return random;
 }
 
