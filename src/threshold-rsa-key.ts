@@ -1,5 +1,4 @@
-import crypto from 'crypto';
-import { randomBigInt, BigInteger, generateSafePrime, randomBigIntCoprime, jacobiSymbol, safeFactorial } from './utils';
+import { randomBigInt, BigInteger, generateSafePrime, randomBigIntCoprime, jacobiSymbol, safeFactorial, isPrimeNative } from './utils';
 
 export type ThresholdRSAKeyConfig = {
 	bits: number,
@@ -57,7 +56,7 @@ export class ThresholdRSAKey {
 			// primality check rather than the in-house Miller-Rabin for robustness.
 			// (Shoup's paper additionally requires e > l, the number of parties,
 			// which is enforced in validateThresholdParams once numParties is known.)
-			if (!crypto.checkPrimeSync(BigInt(this._config.e))) {
+			if (!isPrimeNative(this._config.e)) {
 				throw new Error(`RSA exponent e (${this._config.e}) must be prime`);
 			}
 		} else {
@@ -103,6 +102,12 @@ export class ThresholdRSAKey {
 		} while (p.equals(q));
 
 		const n = p.multiply(q);
+		// Safe primes from OpenSSL have their top two bits set, so n always has
+		// exactly `bits` bits — assert it rather than rely on it (SIG-12): the
+		// signature width (bits/4 hex) must equal the modulus width on the verifier.
+		if (n.bitLength() !== this._config.bits) {
+			throw new Error(`Generated modulus has ${n.bitLength()} bits, expected ${this._config.bits}`);
+		}
 		const e = new BigInteger(this._config.e.toString(), 10);
 
 		// Calculate m = (p-1)(q-1)/2 for safe primes (using m = φ(n)/2)

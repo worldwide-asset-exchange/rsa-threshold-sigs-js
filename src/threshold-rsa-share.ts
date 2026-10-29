@@ -1,6 +1,7 @@
 import crypto from 'crypto';
-import { hashTranscript, randomBigInt, BigInteger, parseBigInteger, jacobiSymbol, emsaPkcs1v15encode, modPowNative } from './utils';
+import { hashTranscript, randomBigInt, BigInteger, parseBigInteger, assertModulusBits, digestToSigningInteger, applyJacobiLift, blindedModPow, coerceInteger } from './utils';
 import { PublicKey } from './threshold-rsa-key';
+import { verifyShareConsistency, ShareConsistencyOptions, ShareConsistencyResult } from './share-consistency';
 
 export type ThresholdRSAShareConfig = {
 	bits: number;
@@ -19,6 +20,12 @@ export type SigningOption = {
 	proof?: boolean;
 }
 
+function assertInOpenRange(x: typeof BigInteger, n: typeof BigInteger, label: string) {
+	if (x.signum() <= 0 || x.compareTo(n) >= 0) {
+		throw new Error(`${label} must be in (0, n)`);
+	}
+}
+
 // Main class for Threshold Signatures
 export class ThresholdRSAShare {
 	private publicKey: PublicKey;
@@ -29,15 +36,41 @@ export class ThresholdRSAShare {
 	private vku: typeof BigInteger;
 
 	constructor(config: ThresholdRSAShareConfig) {
-		this.bits = config.bits;
-		this.sharedKey = parseBigInteger(config.sharedKey);
-		this.verificationKey = parseBigInteger(config.verificationKey);
+		this.bits = coerceInteger(config.bits, 'bits');
+		// Strict parsing (SIG-5) and structural checks (SIG-12) at construction. The
+		// expensive share/verification-key binding check is `verifyConsistency()`.
+		this.sharedKey = parseBigInteger(config.sharedKey, 'sharedKey');
+		this.verificationKey = parseBigInteger(config.verificationKey, 'verificationKey');
 		this.publicKey = {
-			n: parseBigInteger(config.publicKey.n),
-			e: parseBigInteger(config.publicKey.e)
+			n: parseBigInteger(config.publicKey.n, 'publicKey.n'),
+			e: parseBigInteger(config.publicKey.e, 'publicKey.e')
 		};
-		this.verificationKeyShare = parseBigInteger(config.verificationKeyShare);
-		this.vku = parseBigInteger(config.vku);
+		this.verificationKeyShare = parseBigInteger(config.verificationKeyShare, 'verificationKeyShare');
+		this.vku = parseBigInteger(config.vku, 'vku');
+
+		assertModulusBits(this.publicKey.n, this.bits);
+		const { n } = this.publicKey;
+		assertInOpenRange(this.sharedKey, n, 'sharedKey');
+		assertInOpenRange(this.verificationKey, n, 'verificationKey');
+		assertInOpenRange(this.verificationKeyShare, n, 'verificationKeyShare');
+		assertInOpenRange(this.vku, n, 'vku');
+		if (this.publicKey.e.compareTo(BigInteger.TWO) <= 0) {
+			throw new Error('publicKey.e must be greater than 2');
+		}
+	}
+
+	// Boot-time self-check: see verifyShareConsistency. Throws on mismatch unless
+	// options.throwOnFailure === false. Built from the parsed fields — the caller's
+	// config object (and its hex copy of the share) is not retained.
+	verifyConsistency(options: ShareConsistencyOptions = {}): ShareConsistencyResult {
+		return verifyShareConsistency({
+			bits: this.bits,
+			sharedKey: this.sharedKey,
+			publicKey: this.publicKey,
+			verificationKey: this.verificationKey,
+			verificationKeyShare: this.verificationKeyShare,
+			vku: this.vku,
+		}, options);
 	}
 
 	signMessage(message: string | Buffer, option: SigningOption = { pkcs1: true, proof: false }) {
@@ -49,27 +82,13 @@ export class ThresholdRSAShare {
 	signHash(hash: typeof BigInteger | string, option: SigningOption = { pkcs1: true, proof: false }) {
 		const { n, e } = this.publicKey;
 
-		// Convert message to BigInt if it's a string
-		let pureMsgBigInt = parseBigInteger(hash);
-		if (pureMsgBigInt.bitLength() > 256) {
-			throw new Error('Message hash must be 256 bits or less');
-		}
+		const pureMsgBigInt = parseBigInteger(hash, 'hash');
+		const pkcs1 = option.pkcs1 === undefined || option.pkcs1 === null || option.pkcs1;
+		const { x: msgBigIntToSign } = applyJacobiLift(digestToSigningInteger(pureMsgBigInt, this.bits, pkcs1), n, e, this.vku);
 
-		let msgBigIntToSign = pureMsgBigInt;
-		if (option.pkcs1 === undefined || option.pkcs1 === null || option.pkcs1) {
-			const encodedPkcs1 = emsaPkcs1v15encode(Buffer.from(pureMsgBigInt.toString(16).padStart(64, '0'), 'hex'), this.bits);
-			msgBigIntToSign = parseBigInteger(encodedPkcs1.toString('hex'));
-		}
-
-		if (jacobiSymbol(msgBigIntToSign, n) == -1) {
-			msgBigIntToSign = msgBigIntToSign.multiply(this.vku.modPow(e, n)).mod(n);
-		}
-
-		// Generate signature shares
-		const exponent = (new BigInteger('2')).multiply(this.sharedKey);
-		// convert to native BigInt to calculate very large integer modPow, it two times fater than forge BigInteger
-		const signatureShareBigInt = modPowNative(BigInt(msgBigIntToSign.toString()), BigInt(exponent.toString()), BigInt(n.toString()));
-		const signatureShare = new BigInteger(signatureShareBigInt.toString());
+		// Generate signature shares: x_i = x~^(2 s_i) mod n, blinded (SIG-8)
+		const exponent = this.sharedKey.shiftLeft(1);
+		const signatureShare = blindedModPow(msgBigIntToSign, exponent, n);
 
 		let proof;
 		// Generate proofs of correctness for each share
@@ -93,11 +112,10 @@ export class ThresholdRSAShare {
 		// choose random integer less than maxR
 		const r = randomBigInt(maxR);
 
-		// Calculate proof components
-		const vpBigInt = modPowNative(BigInt(this.verificationKey.toString()), BigInt(r.toString()), BigInt(n.toString()));
-		const vp = new BigInteger(vpBigInt.toString());
-		const xpBigInt = modPowNative(BigInt(xt.toString()), BigInt(r.toString()), BigInt(n.toString()));
-		const xp = new BigInteger(xpBigInt.toString());
+		// Calculate proof components. r is secret (z = s_i·c + r reveals s_i if r
+		// leaks) and xt derives from the message, so both exponentiations are blinded.
+		const vp = blindedModPow(this.verificationKey, r, n);
+		const xp = blindedModPow(xt, r, n);
 
 		// Challenge
 		const c = hashTranscript({
