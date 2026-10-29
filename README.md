@@ -67,7 +67,8 @@ result.suspectShareIndices; // indices that only appeared in failed subsets
 
 `verifySignatureMessage` / `verifySignatureHash` return just the signature string
 (unchanged API). Both throw `CombineError` (`code`: `NOT_ENOUGH_SHARES`,
-`INVALID_SHARE`, `NO_VALID_SUBSET`) naming the offending share index(es).
+`DUPLICATE_INDEX`, `INVALID_SHARE`, `NO_VALID_SUBSET`) naming the offending share
+index(es). `threshold` / `numParties` / `bits` may be numbers or decimal strings.
 
 #### Behaviour guarantees (relied on by the on-chain verifier)
 
@@ -76,7 +77,12 @@ result.suspectShareIndices; // indices that only appeared in failed subsets
   Leading-zero padding is normal (~1/16 of signatures start with `0`).
 - Partial signatures are plain integers in `(0, n)` (unpadded in `toString(16)`).
 - Every partial is checked to be in `(0, n)` and coprime to `n` before the combine;
-  the combine tries `k`-subsets of the valid partials until one verifies.
+  partials that fail (or carry a bad index / unparseable value) are skipped and the
+  combine tries `k`-subsets of the remaining partials (cyclic windows first, so one
+  bad share is excluded within `l` attempts) until one verifies.
+- The share exponentiation is blinded and uses a fixed-pattern ladder; it is **not**
+  constant-time (V8 `BigInt`), so keep signers off shared hosts where a co-tenant
+  can time them.
 - All hex input is parsed strictly (`[0-9a-fA-F]+`, either case, any length).
   Strings are hex: a decimal `"65537"` is read as `0x65537`.
 - `bits` must equal `n.bitLength()` (and `bits % 8 == 0`); constructors throw otherwise.

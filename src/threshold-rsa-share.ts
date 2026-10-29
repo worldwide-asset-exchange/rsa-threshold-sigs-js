@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { hashTranscript, randomBigInt, BigInteger, parseBigInteger, modPowNative, assertModulusBits, digestToSigningInteger, applyJacobiLift, blindedModPow } from './utils';
+import { hashTranscript, randomBigInt, BigInteger, parseBigInteger, assertModulusBits, digestToSigningInteger, applyJacobiLift, blindedModPow, coerceInteger } from './utils';
 import { PublicKey } from './threshold-rsa-key';
 import { verifyShareConsistency, ShareConsistencyOptions, ShareConsistencyResult } from './share-consistency';
 
@@ -34,11 +34,9 @@ export class ThresholdRSAShare {
 	private verificationKey: typeof BigInteger;
 	private verificationKeyShare: typeof BigInteger;
 	private vku: typeof BigInteger;
-	private readonly config: ThresholdRSAShareConfig;
 
 	constructor(config: ThresholdRSAShareConfig) {
-		this.config = config;
-		this.bits = config.bits;
+		this.bits = coerceInteger(config.bits, 'bits');
 		// Strict parsing (SIG-5) and structural checks (SIG-12) at construction. The
 		// expensive share/verification-key binding check is `verifyConsistency()`.
 		this.sharedKey = parseBigInteger(config.sharedKey, 'sharedKey');
@@ -62,9 +60,17 @@ export class ThresholdRSAShare {
 	}
 
 	// Boot-time self-check: see verifyShareConsistency. Throws on mismatch unless
-	// options.throwOnFailure === false.
+	// options.throwOnFailure === false. Built from the parsed fields — the caller's
+	// config object (and its hex copy of the share) is not retained.
 	verifyConsistency(options: ShareConsistencyOptions = {}): ShareConsistencyResult {
-		return verifyShareConsistency(this.config, options);
+		return verifyShareConsistency({
+			bits: this.bits,
+			sharedKey: this.sharedKey,
+			publicKey: this.publicKey,
+			verificationKey: this.verificationKey,
+			verificationKeyShare: this.verificationKeyShare,
+			vku: this.vku,
+		}, options);
 	}
 
 	signMessage(message: string | Buffer, option: SigningOption = { pkcs1: true, proof: false }) {
@@ -106,11 +112,10 @@ export class ThresholdRSAShare {
 		// choose random integer less than maxR
 		const r = randomBigInt(maxR);
 
-		// Calculate proof components
-		const vpBigInt = modPowNative(BigInt(this.verificationKey.toString()), BigInt(r.toString()), BigInt(n.toString()));
-		const vp = new BigInteger(vpBigInt.toString());
-		const xpBigInt = modPowNative(BigInt(xt.toString()), BigInt(r.toString()), BigInt(n.toString()));
-		const xp = new BigInteger(xpBigInt.toString());
+		// Calculate proof components. r is secret (z = s_i·c + r reveals s_i if r
+		// leaks) and xt derives from the message, so both exponentiations are blinded.
+		const vp = blindedModPow(this.verificationKey, r, n);
+		const xp = blindedModPow(xt, r, n);
 
 		// Challenge
 		const c = hashTranscript({

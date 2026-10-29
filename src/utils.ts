@@ -52,18 +52,34 @@ export function toCanonicalHex(value: typeof BigInteger, bits: number): string {
 	return hex.padStart(width, '0');
 }
 
+// Integer parameters (bits, threshold, numParties, …) arrive from the consumer's
+// config layer, where env-sourced values are strings. 1.3.0 coerced them
+// implicitly; accept a non-negative integer or a decimal digit string, reject
+// anything else explicitly.
+export function coerceInteger(value: any, label: string): number {
+	if (typeof value === 'number' && Number.isInteger(value)) return value;
+	if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+	throw new TypeError(`${label} must be an integer (number or decimal string); got ${JSON.stringify(value)}`);
+}
+
+// Primality via OpenSSL (node:crypto) — the single primality path for public
+// exponents (ThresholdRSAKey.validateParams, verifyShareConsistency).
+export function isPrimeNative(value: typeof BigInteger | number | bigint): boolean {
+	const big = typeof value === 'bigint' ? value : typeof value === 'number' ? BigInt(value) : BigInt('0x' + value.toString(16));
+	if (big < 2n) return false;
+	return crypto.checkPrimeSync(big);
+}
+
 // Structural check shared by every place a modulus and a bit size meet (SIG-12):
 // the on-chain verifier requires len(sig_hex) == len(modulus_hex) and the library
-// pads signatures to bits/4, so both only line up when n.bitLength() == bits.
+// pads signatures to bits/4, so both only line up when n.bitLength() == bits with
+// bits a multiple of 8 (which makes the hex width exactly bits/4).
 export function assertModulusBits(n: typeof BigInteger, bits: number, label: string = 'publicKey.n') {
 	if (!Number.isInteger(bits) || bits <= 0 || bits % 8 !== 0) {
 		throw new Error(`bits must be a positive multiple of 8; got ${bits}`);
 	}
 	if (n.bitLength() !== bits) {
 		throw new Error(`${label}.bitLength() is ${n.bitLength()} but bits is ${bits}`);
-	}
-	if (n.toString(16).length !== bits / 4) {
-		throw new Error(`${label} hex width ${n.toString(16).length} != bits/4 = ${bits / 4}`);
 	}
 	if (!n.testBit(0)) {
 		throw new Error(`${label} must be odd`);
@@ -135,14 +151,35 @@ export function hashTranscript(transcript: any) {
 	return new BigInteger(h.digest('hex'), 16);
 }
 
+// Montgomery-ladder modular exponentiation: one multiply and one square per
+// exponent bit in a fixed order, whatever the bit is. Used for SECRET exponents
+// (modPowNative's square-and-multiply skips the multiply on 0 bits). V8 BigInt
+// arithmetic itself is not constant-time, so this removes the operation-pattern
+// leak, not every timing signal — see CHANGELOG (SIG-8 residual).
+export function modPowLadder(base: bigint, exponent: bigint, modulus: bigint): bigint {
+	if (modulus === 1n) return 0n;
+	let r0 = 1n;
+	let r1 = base % modulus;
+	for (let i = exponent.toString(2).length - 1; i >= 0; i--) {
+		if ((exponent >> BigInt(i)) & 1n) {
+			r0 = (r0 * r1) % modulus;
+			r1 = (r1 * r1) % modulus;
+		} else {
+			r1 = (r0 * r1) % modulus;
+			r0 = (r0 * r0) % modulus;
+		}
+	}
+	return r0;
+}
+
 // Blinded modular exponentiation with a SECRET exponent (SIG-8).
 //   r ← random in Z_n^*;  y = (base·r)^exp · (r^exp)^{-1} mod n = base^exp mod n
 // The exponentiation that touches `exp` therefore never runs on an input the
-// caller (or a requester upstream of the caller) chose. Classic RSA blinding
-// unblinds with r^{-1} because the exponent is d and (r^e)^d = r; a Shoup
-// share exponent 2·s_i has no public inverse exponent, so r^exp is computed
-// explicitly — one extra exponentiation on a random base, still blinded.
-// Output is bit-identical to the unblinded computation (tested).
+// caller (or a requester upstream of the caller) chose, and both exponentiations
+// use the fixed-pattern ladder. Classic RSA blinding unblinds with r^{-1} because
+// the exponent is d and (r^e)^d = r; a Shoup share exponent 2·s_i has no public
+// inverse exponent, so r^exp is computed explicitly — one extra exponentiation
+// on a random base. Output is bit-identical to the unblinded computation (tested).
 export function blindedModPow(base: typeof BigInteger, exp: typeof BigInteger, n: typeof BigInteger): typeof BigInteger {
 	const nBig = BigInt('0x' + n.toString(16));
 	const expBig = BigInt('0x' + exp.toString(16));
@@ -151,8 +188,8 @@ export function blindedModPow(base: typeof BigInteger, exp: typeof BigInteger, n
 	const r = randomBigIntCoprime(n);
 	const rBig = BigInt('0x' + r.toString(16));
 	const blinded = (BigInt('0x' + baseModN.toString(16)) * rBig) % nBig;
-	const yBlinded = modPowNative(blinded, expBig, nBig);
-	const rExp = modPowNative(rBig, expBig, nBig);
+	const yBlinded = modPowLadder(blinded, expBig, nBig);
+	const rExp = modPowLadder(rBig, expBig, nBig);
 	const rExpInv = new BigInteger(rExp.toString(16), 16).modInverse(n);
 	const y = (yBlinded * BigInt('0x' + rExpInv.toString(16))) % nBig;
 	return new BigInteger(y.toString(16), 16);
@@ -192,6 +229,29 @@ export function* kSubsets(count: number, k: number): Generator<number[]> {
 		if (i < 0) return;
 		idx[i]++;
 		for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
+	}
+}
+
+// Order in which the combine tries k-subsets of `count` candidate positions:
+// first the `count` cyclic windows of k consecutive positions (the first window
+// is positions 0..k-1, i.e. 1.3.0's behaviour), so that any single bad share
+// is excluded within `count` attempts for every (k, l); then every remaining
+// subset in lexicographic order (bounded by the caller's attempt cap).
+export function* combineSubsetOrder(count: number, k: number): Generator<number[]> {
+	if (k > count || k <= 0) return;
+	const seen = new Set<string>();
+	for (let start = 0; start < count; start++) {
+		const window = Array.from({ length: k }, (_, j) => (start + j) % count).sort((a, b) => a - b);
+		const key = window.join(',');
+		if (seen.has(key)) continue;
+		seen.add(key);
+		yield window;
+	}
+	for (const subset of kSubsets(count, k)) {
+		const key = subset.join(',');
+		if (seen.has(key)) continue;
+		seen.add(key);
+		yield subset;
 	}
 }
 

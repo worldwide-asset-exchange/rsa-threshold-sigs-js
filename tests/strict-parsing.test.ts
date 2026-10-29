@@ -124,6 +124,20 @@ describe("ThresholdRSAVerifier construction checks", () => {
     ).toThrow(/hex/i);
   });
 
+  it("rejects verificationKeys entries that are 0, >= n or not coprime to n", () => {
+    const keys = [...fx.sharedKey.verificationKeys];
+    keys[1] = "0";
+    expect(
+      () =>
+        new ThresholdRSAVerifier(verifierConfig(fx, { verificationKeys: keys }))
+    ).toThrow(/verificationKeys\[1\]/);
+    keys[1] = fx.publicKey.n;
+    expect(
+      () =>
+        new ThresholdRSAVerifier(verifierConfig(fx, { verificationKeys: keys }))
+    ).toThrow(/verificationKeys\[1\]/);
+  });
+
   it("still validates threshold/numParties", () => {
     expect(
       () => new ThresholdRSAVerifier(verifierConfig(fx, { threshold: 4 }))
@@ -186,6 +200,18 @@ describe("verifyShareConsistency (boot-time self-check)", () => {
         verificationKeys: fx.sharedKey.verificationKeys,
       })
     ).toThrow(/shareIndex/);
+  });
+
+  it("detects a verificationKeys list whose length differs from numParties", () => {
+    const r = verifyShareConsistency(shareConfig(fx, 1), {
+      throwOnFailure: false,
+      shareIndex: 2,
+      numParties: 3,
+      verificationKeys: fx.sharedKey.verificationKeys.slice(0, 2),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.checks.verificationKeysLength).toBe(false);
+    expect(r.checks.shareIndex).toBe(true);
   });
 
   it("detects a vku with Jacobi symbol +1", () => {

@@ -91,6 +91,39 @@ describe("verifySharesHash uses dealer-published verification keys (SIG-1)", () 
     ).toBe(false);
   });
 
+  it("returns false for proofs whose z/c are strings, null or out of range (no TypeError)", () => {
+    const h = randomHashHex();
+    const p: any = partialWithProofFor(signers[0], 0, h);
+    expect(
+      verifier.verifySharesHash(h, [
+        {
+          ...p,
+          proof: { z: p.proof.z.toString(16), c: p.proof.c.toString(16) },
+        },
+      ])
+    ).toBe(true); // hex strings are fine
+    expect(
+      verifier.verifySharesHash(h, [{ ...p, proof: { z: "zz", c: p.proof.c } }])
+    ).toBe(false);
+    expect(
+      verifier.verifySharesHash(h, [{ ...p, proof: { z: null, c: p.proof.c } }])
+    ).toBe(false);
+    expect(
+      verifier.verifySharesHash(h, [
+        { ...p, proof: { z: p.proof.z.negate(), c: p.proof.c } },
+      ])
+    ).toBe(false);
+    expect(
+      verifier.verifySharesHash(h, [
+        { ...p, proof: { z: p.proof.z, c: BigInteger.ONE.shiftLeft(300) } },
+      ])
+    ).toBe(false);
+    const d = verifier.verifySharesHashDetailed(h, [
+      { ...p, proof: { z: "zz", c: p.proof.c } },
+    ]);
+    expect(d.failures[0].reason).toMatch(/hex/i);
+  });
+
   it("throws if the verifier was built without verificationKeys", () => {
     const bare = makeVerifier(fx, { verificationKeys: undefined });
     const h = randomHashHex();

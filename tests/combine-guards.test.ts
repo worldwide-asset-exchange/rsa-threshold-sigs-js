@@ -95,14 +95,85 @@ describe("combine: per-share value guards (SIG-13)", () => {
     ]);
   });
 
-  it("rejects a non-hex string partial as malformed input", () => {
+  it("rejects a malformed (non-hex) partial and routes around it when enough remain", () => {
     const m = msg();
-    expect(() =>
+    let caught: any;
+    try {
       verifier.verifySignatureMessage(m, [
         { signatureShare: "not-hex!" as any, shareIndex: 1 },
         partialFor(signers[1], 1, m),
+      ]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CombineError);
+    expect(caught.code).toBe("INVALID_SHARE");
+    expect(caught.message).toMatch(/hex/i);
+    const r = verifier.combineSignatureMessage(m, [
+      { signatureShare: undefined as any, shareIndex: 1 },
+      partialFor(signers[1], 1, m),
+      partialFor(signers[2], 2, m),
+    ]);
+    expect(r.usedShareIndices).toEqual([2, 3]);
+    expect(r.rejectedShares).toEqual([
+      expect.objectContaining({
+        shareIndex: 1,
+        reason: expect.stringMatching(/malformed/),
+      }),
+    ]);
+  });
+
+  it("rejects an out-of-range share index and routes around it when enough remain", () => {
+    const m = msg();
+    for (const badIdx of [0, 7, 1.5]) {
+      const r = verifier.combineSignatureMessage(m, [
+        { ...partialFor(signers[0], 0, m), shareIndex: badIdx },
+        partialFor(signers[1], 1, m),
+        partialFor(signers[2], 2, m),
+      ]);
+      expect(r.usedShareIndices).toEqual([2, 3]);
+      expect(r.rejectedShares[0].reason).toMatch(
+        new RegExp(`Invalid share index ${badIdx}`)
+      );
+    }
+    expect(() =>
+      verifier.verifySignatureMessage(m, [
+        { ...partialFor(signers[0], 0, m), shareIndex: 0 },
+        partialFor(signers[1], 1, m),
       ])
-    ).toThrow(/hex/i);
+    ).toThrow("Invalid share index 0");
+  });
+
+  it("accepts threshold/numParties/bits as decimal strings (env-sourced oracle config) and rejects other strings", () => {
+    const m = msg();
+    const stringy = new ThresholdRSAVerifier({
+      ...verifierConfig(fx),
+      threshold: "2" as any,
+      numParties: "3" as any,
+      bits: "1024" as any,
+      verificationKeys: undefined,
+    });
+    const sig = stringy.verifySignatureMessage(m, [
+      partialFor(signers[0], 0, m),
+      partialFor(signers[1], 1, m),
+    ]);
+    expect(sig).toBe(
+      verifier.verifySignatureMessage(m, [
+        partialFor(signers[0], 0, m),
+        partialFor(signers[1], 1, m),
+      ])
+    );
+    expect(
+      () =>
+        new ThresholdRSAVerifier({
+          ...verifierConfig(fx),
+          numParties: "three" as any,
+        })
+    ).toThrow(TypeError);
+    expect(
+      () =>
+        new ThresholdRSAShare({ ...shareConfig(fx, 0), bits: "1024" as any })
+    ).not.toThrow();
   });
 
   it("accepts a partial given as a (strict) hex string", () => {
@@ -134,12 +205,9 @@ describe("combine: k-subset retry (SIG-4)", () => {
     ]);
     expect(r.signature).toBe(honest);
     expect(r.usedShareIndices).toEqual([2, 3]);
-    expect(r.failedSubsets).toEqual([
-      [1, 2],
-      [1, 3],
-    ]);
+    expect(r.failedSubsets).toEqual([[1, 2]]); // cyclic-window order: [1,2] then [2,3]
     expect(r.suspectShareIndices).toEqual([1]);
-    expect(r.attempts).toBe(3);
+    expect(r.attempts).toBe(2);
     // the legacy string-returning API takes the same path
     expect(
       verifier.verifySignatureMessage(m, [
@@ -201,8 +269,8 @@ describe("combine: k-subset retry (SIG-4)", () => {
     expect(caught.code).toBe("NO_VALID_SUBSET");
     expect(caught.attemptedSubsets).toEqual([
       [1, 2],
-      [1, 3],
       [2, 3],
+      [1, 3],
     ]);
   });
 
@@ -226,13 +294,19 @@ describe("combine: k-subset retry (SIG-4)", () => {
 
   it("still rejects duplicate indices anywhere in the provided set", () => {
     const m = msg();
-    expect(() =>
+    let caught: any;
+    try {
       verifier.verifySignatureMessage(m, [
         partialFor(signers[0], 0, m),
         partialFor(signers[1], 1, m),
         partialFor(signers[0], 0, m),
-      ])
-    ).toThrow("Duplicate share indices detected");
+      ]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CombineError);
+    expect(caught.code).toBe("DUPLICATE_INDEX");
+    expect(caught.message).toBe("Duplicate share indices detected");
   });
 
   it("still requires at least threshold shares", () => {

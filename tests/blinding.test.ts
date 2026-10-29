@@ -4,6 +4,7 @@ import crypto from "crypto";
 import {
   BigInteger,
   blindedModPow,
+  modPowLadder,
   modPowNative,
   parseBigInteger,
 } from "../src/utils";
@@ -12,6 +13,24 @@ import { loadThrowawayKey, makeSigners, randomHashHex } from "./fixtures";
 const fx = loadThrowawayKey(1024);
 const n = parseBigInteger(fx.publicKey.n);
 const toBig = (x: typeof BigInteger) => BigInt("0x" + x.toString(16));
+
+describe("modPowLadder", () => {
+  it("equals square-and-multiply for random operands and edge cases", () => {
+    const nBig = toBig(n);
+    for (let i = 0; i < 50; i++) {
+      const base = BigInt("0x" + crypto.randomBytes(128).toString("hex"));
+      const exp = BigInt(
+        "0x" + crypto.randomBytes(16 + (i % 100)).toString("hex")
+      );
+      expect(modPowLadder(base, exp, nBig)).toBe(modPowNative(base, exp, nBig));
+    }
+    expect(modPowLadder(5n, 0n, nBig)).toBe(1n);
+    expect(modPowLadder(5n, 1n, nBig)).toBe(5n);
+    expect(modPowLadder(0n, 7n, nBig)).toBe(0n);
+    expect(modPowLadder(7n, 3n, 1n)).toBe(0n);
+    expect(modPowLadder(88n, 2n, 65n)).toBe(9n);
+  });
+});
 
 describe("blindedModPow", () => {
   it("equals the plain modular exponentiation for random bases and secret exponents", () => {

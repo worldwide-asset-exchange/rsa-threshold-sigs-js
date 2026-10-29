@@ -1,5 +1,4 @@
-import crypto from 'crypto';
-import { BigInteger, parseBigInteger, jacobiSymbol, toCanonicalHex } from './utils';
+import { BigInteger, parseBigInteger, jacobiSymbol, toCanonicalHex, assertModulusBits, isPrimeNative } from './utils';
 import type { ThresholdRSAShareConfig } from './threshold-rsa-share';
 
 export type ShareConsistencyOptions = {
@@ -23,6 +22,7 @@ export type ShareConsistencyChecks = {
 	exponentAboveParties: boolean; // e > numParties (only when numParties given)
 	thresholdRange: boolean;       // 1 <= threshold <= numParties (only when both given)
 	shareIndexRange: boolean;      // 1 <= shareIndex <= numParties (only when given)
+	verificationKeysLength: boolean; // verificationKeys.length == numParties (only when both given)
 	sharedKeyRange: boolean;       // 0 < s_i and s_i.bitLength() <= bits - 2 (s_i < m < n/4)
 	verificationKeyRange: boolean; // 0 < v < n, gcd(v, n) = 1, J(v|n) = +1 (v ∈ Q_n)
 	verificationKeyShareRange: boolean; // 0 < v_i < n, gcd(v_i, n) = 1
@@ -59,8 +59,7 @@ function inRangeCoprime(x: typeof BigInteger, n: typeof BigInteger): boolean {
 }
 
 function isOddPrime(e: typeof BigInteger): boolean {
-	if (e.compareTo(BigInteger.TWO) <= 0 || !e.testBit(0)) return false;
-	return crypto.checkPrimeSync(BigInt('0x' + e.toString(16)));
+	return e.compareTo(BigInteger.TWO) > 0 && e.testBit(0) && isPrimeNative(e);
 }
 
 // Boot-time self-check for one party's share configuration (SIG-5). Every check is
@@ -77,7 +76,7 @@ export function verifyShareConsistency(config: ThresholdRSAShareConfig, options:
 	};
 	const checks: ShareConsistencyChecks = {
 		modulusBits: true, modulusOdd: true, exponentPrime: true, exponentAboveParties: true,
-		thresholdRange: true, shareIndexRange: true, sharedKeyRange: true, verificationKeyRange: true,
+		thresholdRange: true, shareIndexRange: true, verificationKeysLength: true, sharedKeyRange: true, verificationKeyRange: true,
 		verificationKeyShareRange: true, vkuRange: true, vkuJacobi: true, verificationKeyShare: true,
 		shareIndex: true, expectedPublicKey: true,
 	};
@@ -93,10 +92,11 @@ export function verifyShareConsistency(config: ThresholdRSAShareConfig, options:
 	const u = parseBigInteger(config.vku, 'vku');
 	const verificationKeys = options.verificationKeys?.map((k, i) => parseBigInteger(k, `verificationKeys[${i}]`));
 
-	if (!Number.isInteger(bits) || bits <= 0 || bits % 8 !== 0 || n.bitLength() !== bits || n.toString(16).length !== bits / 4) {
-		fail('modulusBits', `publicKey.n.bitLength() is ${n.bitLength()} (hex width ${n.toString(16).length}) but bits is ${bits} (need bitLength == bits, width == bits/4, bits % 8 == 0)`);
+	try {
+		assertModulusBits(n, bits);
+	} catch (e) {
+		fail(n.testBit(0) ? 'modulusBits' : 'modulusOdd', (e as Error).message);
 	}
-	if (!n.testBit(0)) fail('modulusOdd', 'publicKey.n is even');
 	if (!isOddPrime(e)) fail('exponentPrime', `public exponent e = 0x${e.toString(16)} is not an odd prime`);
 	if (options.numParties !== undefined && e.compareTo(new BigInteger(String(options.numParties))) <= 0) {
 		fail('exponentAboveParties', `public exponent e = 0x${e.toString(16)} must exceed numParties = ${options.numParties}`);
@@ -104,6 +104,9 @@ export function verifyShareConsistency(config: ThresholdRSAShareConfig, options:
 	if (options.numParties !== undefined && options.threshold !== undefined
 		&& (!Number.isInteger(options.threshold) || options.threshold < 1 || options.threshold > options.numParties)) {
 		fail('thresholdRange', `threshold ${options.threshold} is outside [1, numParties = ${options.numParties}]`);
+	}
+	if (verificationKeys && options.numParties !== undefined && verificationKeys.length !== options.numParties) {
+		fail('verificationKeysLength', `verificationKeys has ${verificationKeys.length} entries but numParties is ${options.numParties}`);
 	}
 	if (options.shareIndex !== undefined
 		&& (!Number.isInteger(options.shareIndex) || options.shareIndex < 1
@@ -121,7 +124,7 @@ export function verifyShareConsistency(config: ThresholdRSAShareConfig, options:
 	if (!inRangeCoprime(u, n)) fail('vkuRange', 'vku u must be in (0, n) and coprime to n');
 	else if (jacobiSymbol(u, n) !== -1) fail('vkuJacobi', 'vku u must have Jacobi symbol -1 modulo n');
 
-	if (checks.sharedKeyRange && checks.verificationKeyRange && checks.verificationKeyShareRange) {
+	if (checks.modulusBits && checks.sharedKeyRange && checks.verificationKeyRange && checks.verificationKeyShareRange) {
 		if (!v.modPow(s, n).equals(vi)) {
 			fail('verificationKeyShare', 'verificationKeyShare does not equal v^sharedKey mod n: the share and its verification key do not belong together (wrong share, wrong v_i, or wrong v)');
 		}

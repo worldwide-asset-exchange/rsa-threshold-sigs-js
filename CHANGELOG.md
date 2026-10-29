@@ -22,21 +22,30 @@ unchanged.
   `node-forge < 1.4.0` and wedged the calling process. `node-forge` now has a
   `^1.4.0` floor.
 - **SIG-4** The combine no longer takes only the first `k` shares: it iterates
-  `k`-subsets of the valid shares (first `k` first, so honest input behaves as
-  before) until one verifies, bounded by `maxCombineAttempts` (default 256).
+  `k`-subsets of the valid shares until one verifies — first the cyclic windows
+  of `k` consecutive shares (the first window is the first `k`, so honest input
+  behaves as before, and any single bad share is excluded within `l` attempts
+  for every `(k, l)`), then the remaining subsets, bounded by
+  `maxCombineAttempts` (default 256).
+- A share with an out-of-range index or an unparseable value is **rejected and
+  skipped** (reported in `rejectedShares`) rather than aborting the combine, so
+  `k` good shares still produce a signature; duplicate indices anywhere in the
+  set still throw (`DUPLICATE_INDEX`).
 - New `combineSignatureHash/Message(...)` return a `CombineResult`
   (`signature`, `usedShareIndices`, `rejectedShares`, `failedSubsets`,
-  `suspectShareIndices`, `attempts`) so a consumer can attribute a bad partial.
-  The string-returning methods are unchanged wrappers.
+  `suspectShareIndices` = indices present in every failed subset and absent
+  from the verified one, `attempts`) so a consumer can attribute a bad
+  partial. The string-returning methods are unchanged wrappers.
 - Failures throw `CombineError` with `code` (`NOT_ENOUGH_SHARES`,
-  `INVALID_SHARE`, `NO_VALID_SUBSET`), `rejectedShares` and `attemptedSubsets`;
+  `DUPLICATE_INDEX`, `INVALID_SHARE`, `NO_VALID_SUBSET`), `rejectedShares` and
+  `attemptedSubsets`;
   messages name the offending share index(es). Legacy messages
   (`Not enough shares…`, `Invalid share index…`, `Duplicate share indices detected`) are preserved.
-- Duplicate share indices are now rejected anywhere in the provided set, not
-  only within the first `k` (the contract refuses duplicate parts, so this is
-  not reachable from chain data).
 - `signatureShare` may be passed as a strict hex string as well as a
   `BigInteger`.
+- `threshold`, `numParties`, `bits` and `maxCombineAttempts` accept decimal
+  strings as well as numbers (consumers read them from env; 1.3.0 relied on
+  implicit coercion). Any other string throws a `TypeError` at construction.
 
 ### Parsing and self-checks
 
@@ -47,16 +56,18 @@ unchanged.
   decimal `"65537"` is `0x65537`; use `verifyShareConsistency` with
   `expectedPublicKey` to catch that.
 - **SIG-12** `ThresholdRSAShare`, `ThresholdRSAVerifier` and
-  `ThresholdRSAKey.generateKeyPair` assert `n.bitLength() == bits`, hex width
-  `== bits/4`, `bits % 8 == 0`; share/verifier constructors also check every
-  value is in `(0, n)`.
+  `ThresholdRSAKey.generateKeyPair` assert `n.bitLength() == bits` and
+  `bits % 8 == 0` (hence hex width `== bits/4`); share/verifier constructors
+  also check every value — including `verificationKeys[]` — is in `(0, n)`
+  (and coprime to `n` where that is required).
 - New `verifyShareConsistency(config, options)` (also
   `share.verifyConsistency(options)`): the boot-time self-check an oracle
   member should run before signing. Checks `v^{s_i} == v_i`, `J(u|n) = −1`,
   `J(v|n) = +1`, exponent primality and `e > numParties`, share/index ranges,
   `verificationKeys[shareIndex−1] == v_i`, and agreement with an
   `expectedPublicKey` (e.g. the on-chain `pubkeys` row, including modulus hex
-  width). Returns a structured `ShareConsistencyResult` and throws
+  width) and `verificationKeys.length == numParties`. Returns a structured
+  `ShareConsistencyResult` and throws
   `ShareConsistencyError` on any failure (`throwOnFailure: false` to get the
   result instead).
 
@@ -76,8 +87,10 @@ unchanged.
   element. Proofs produced by earlier versions do not verify (none are
   persisted anywhere).
 - New `verifySharesHashDetailed(...)` returns `{ ok, failures[] }` with the
-  failing share index and reason; malformed shares (missing proof, bad index,
-  share not in `(0, n)`) yield `false` instead of a `TypeError`.
+  failing share index and reason; malformed shares (missing or non-numeric
+  proof, negative `z`, `c` wider than 256 bits, bad index, share not in
+  `(0, n)`) yield `false` instead of a `TypeError`. `proof.z`/`proof.c` may be
+  hex strings.
 
 ### Dependency surface
 
@@ -108,14 +121,20 @@ unchanged.
   replaced by the 1.3.0 golden vectors.
 - **SIG-3** `script/generateKey.ts` no longer writes the unshared private key
   unless `--unsafe-write-private-key` is passed, prints a warning when it is,
-  writes the output with mode `0600`, and the README documents the
-  encrypt-to-party ceremony as the intended path.
+  creates `generatedKeys/` with mode `0700` and the output file create-only
+  with mode `0600` (refusing to overwrite a previous ceremony output), and the
+  README documents the encrypt-to-party ceremony as the intended path.
 
 ### Exports
 
 - `index` now also exports `BigInteger`, `parseBigInteger`, `toCanonicalHex`,
   `verifyShareConsistency`, `ShareConsistencyError`, `CombineError` and the
   new result types.
+- Note on versioning: removing `KeyEncryption` from the index and the CBC
+  fallback are strictly breaking changes shipped in a minor version because
+  the only known consumer (the WAX RNG oracle) uses neither and pins `^1.3.0`;
+  the proof-path `verificationKeys` requirement likewise affects no known
+  caller.
 
 ## 1.3.0 — 2026-05-25
 

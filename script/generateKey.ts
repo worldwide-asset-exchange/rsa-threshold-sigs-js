@@ -38,7 +38,7 @@ async function generateKeys() {
         // Create output directory if it doesn't exist
         const outputDir = path.join(__dirname, '../generatedKeys');
         if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir);
+            fs.mkdirSync(outputDir, { mode: 0o700 });
         }
 
         const result = await thresholdKey.splitShares(threshold, numParties);
@@ -53,12 +53,18 @@ async function generateKeys() {
 
         // Save to file
         const outputPath = path.join(outputDir, 'threshold-keys.json');
-        fs.writeFileSync(outputPath, JSON.stringify(output, (key, value) => {
+        if (fs.existsSync(outputPath)) {
+            throw new Error(`${outputPath} already exists — move or destroy the previous ceremony output first`);
+        }
+        const fd = fs.openSync(outputPath, 'wx', 0o600); // create-only, owner read/write
+        fs.writeFileSync(fd, JSON.stringify(output, (key, value) => {
             if (value instanceof BigInteger) {
                 return value.toString(16);
             }
             return value;
-        }, 2), { mode: 0o600 });
+        }, 2));
+        fs.closeSync(fd);
+        fs.chmodSync(outputPath, 0o600);
 
         console.log('\n===== KEY GENERATION COMPLETE =====', new Date().toISOString());
         console.log(`Keys have been saved to: ${outputPath}`);

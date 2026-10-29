@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { extendedGCD, hashTranscript, lagrangeCoefficient, BigInteger, parseBigInteger, safeFactorial, assertModulusBits, digestToSigningInteger, applyJacobiLift, toCanonicalHex, kSubsets } from './utils';
+import { extendedGCD, hashTranscript, lagrangeCoefficient, BigInteger, parseBigInteger, safeFactorial, assertModulusBits, digestToSigningInteger, applyJacobiLift, toCanonicalHex, combineSubsetOrder, coerceInteger } from './utils';
 import { PublicKey } from './threshold-rsa-key';
 
 export type ThresholdRSAVerifierConfig = {
@@ -20,6 +20,8 @@ export type ThresholdRSAVerifierConfig = {
 	// (default 256; 2-of-3 needs at most 3). (SIG-4)
 	maxCombineAttempts?: number;
 }
+// threshold / numParties / bits / maxCombineAttempts also accept decimal strings
+// (consumers read them from env); see coerceInteger.
 
 export type RSASignatureShare = {
 	signatureShare: typeof BigInteger | string;
@@ -44,7 +46,9 @@ export type CombineResult = {
 	usedShareIndices: number[];    // the k-subset that verified
 	rejectedShares: RejectedShare[]; // shares excluded before any subset was tried
 	failedSubsets: number[][];     // share-index subsets tried before the one that verified
-	suspectShareIndices: number[]; // indices that appear in failed subsets but not in the verified one
+	// Indices present in EVERY failed subset and absent from the verified one: with a
+	// single bad share this is exactly that share; with several it may be empty.
+	suspectShareIndices: number[];
 	attempts: number;
 }
 
@@ -54,7 +58,7 @@ export type ShareProofFailure = {
 	reason: string;
 }
 
-export type CombineErrorCode = 'NOT_ENOUGH_SHARES' | 'INVALID_SHARE' | 'NO_VALID_SUBSET';
+export type CombineErrorCode = 'NOT_ENOUGH_SHARES' | 'DUPLICATE_INDEX' | 'INVALID_SHARE' | 'NO_VALID_SUBSET';
 
 export class CombineError extends Error {
 	public readonly code: CombineErrorCode;
@@ -84,16 +88,16 @@ export class ThresholdRSAVerifier {
 	private maxCombineAttempts: number;
 
 	constructor(config: ThresholdRSAVerifierConfig) {
-		this.threshold = config.threshold;
-		this.numParties = config.numParties;
-		this.bits = config.bits;
+		this.threshold = coerceInteger(config.threshold, 'threshold');
+		this.numParties = coerceInteger(config.numParties, 'numParties');
+		this.bits = coerceInteger(config.bits, 'bits');
 		this.publicKey = {
 			n: parseBigInteger(config.publicKey.n, 'publicKey.n'),
 			e: parseBigInteger(config.publicKey.e, 'publicKey.e')
 		};
 		this.verificationKey = parseBigInteger(config.verificationKey, 'verificationKey');
 		this.vku = parseBigInteger(config.vku, 'vku');
-		this.maxCombineAttempts = config.maxCombineAttempts ?? DEFAULT_MAX_COMBINE_ATTEMPTS;
+		this.maxCombineAttempts = config.maxCombineAttempts === undefined ? DEFAULT_MAX_COMBINE_ATTEMPTS : coerceInteger(config.maxCombineAttempts, 'maxCombineAttempts');
 
 		this.validateParams();
 		assertModulusBits(this.publicKey.n, this.bits);
@@ -103,6 +107,12 @@ export class ThresholdRSAVerifier {
 				throw new Error(`verificationKeys must be an array of length numParties (${this.numParties})`);
 			}
 			this.verificationKeys = config.verificationKeys.map((k, i) => parseBigInteger(k, `verificationKeys[${i}]`));
+			const { n } = this.publicKey;
+			this.verificationKeys.forEach((vi, i) => {
+				if (vi.signum() <= 0 || vi.compareTo(n) >= 0 || !vi.gcd(n).equals(BigInteger.ONE)) {
+					throw new Error(`verificationKeys[${i}] must be in (0, n) and coprime to n`);
+				}
+			});
 		}
 
 		// Set delta = l! (factorial of total number of parties)
@@ -161,11 +171,15 @@ export class ThresholdRSAVerifier {
 			const idx = share.shareIndex;
 			const fail = (reason: string) => failures.push({ position: i, shareIndex: idx, reason });
 			if (!Number.isInteger(idx) || idx < 1 || idx > this.numParties) { fail(`invalid share index ${idx}`); continue; }
-			if (!share.proof || share.proof.z === undefined || share.proof.c === undefined) { fail('missing proof'); continue; }
-			let xi: typeof BigInteger;
-			try { xi = parseBigInteger(share.signatureShare, 'signatureShare'); } catch (e) { fail((e as Error).message); continue; }
+			if (!share.proof || share.proof.z === undefined || share.proof.c === undefined || share.proof.z === null || share.proof.c === null) { fail('missing proof'); continue; }
+			let xi: typeof BigInteger, z: typeof BigInteger, c: typeof BigInteger;
+			try {
+				xi = parseBigInteger(share.signatureShare, 'signatureShare');
+				z = parseBigInteger(share.proof.z, 'proof.z');
+				c = parseBigInteger(share.proof.c, 'proof.c');
+			} catch (e) { fail((e as Error).message); continue; }
 			if (xi.signum() <= 0 || xi.compareTo(n) >= 0 || !xi.gcd(n).equals(BigInteger.ONE)) { fail('signature share not in (0, n) or not coprime to n'); continue; }
-			const { z, c } = share.proof;
+			if (z.signum() < 0 || c.signum() < 0 || c.bitLength() > 256) { fail('proof z/c out of range'); continue; }
 			const vi = this.verificationKeys[idx - 1];
 
 			// Verify proof components
@@ -224,31 +238,40 @@ export class ThresholdRSAVerifier {
 
 		const { x: msgBigIntToSign, lifted: vkuMutiple } = this.encodeAndLift(msgBigInt, pkcs1);
 
-		// Structural checks over the WHOLE provided set (malformed input → throw):
-		// index range and duplicates. An out-of-range index would produce an
-		// incorrect Lagrange coefficient; a duplicate could reach the threshold
-		// count by reusing a single party's share.
+		// Duplicate indices anywhere in the set are malformed input (a party cannot
+		// contribute twice; the contract refuses duplicate parts) → throw.
 		const shareIndices = shares.map(share => share.shareIndex);
-		for (const idx of shareIndices) {
-			if (!Number.isInteger(idx) || idx < 1 || idx > this.numParties) {
-				throw new Error(`Invalid share index ${idx}: must be an integer between 1 and ${this.numParties}`);
-			}
-		}
 		if (new Set(shareIndices).size !== shareIndices.length) {
-			throw new Error('Duplicate share indices detected');
+			throw new CombineError('DUPLICATE_INDEX', 'Duplicate share indices detected');
 		}
 
-		// Value checks per share (bad value → reject that share, keep the rest).
+		// Per-share checks: a share that fails is REJECTED (kept out of every subset)
+		// rather than aborting the combine, so k good shares still produce a signature.
+		//  - index must be an integer in [1, numParties] (a wrong index gives a wrong
+		//    Lagrange coefficient)
+		//  - value must parse, be in (0, n) and be coprime to n (SIG-13)
 		const candidates: { position: number, shareIndex: number, value: typeof BigInteger }[] = [];
 		const rejectedShares: RejectedShare[] = [];
 		shares.forEach((share, position) => {
-			const value = parseBigInteger(share.signatureShare, `shares[${position}].signatureShare`);
+			const idx = share.shareIndex;
 			let reason: string | undefined;
-			if (value.signum() <= 0) reason = value.signum() === 0 ? 'zero' : 'negative';
-			else if (value.compareTo(n) >= 0) reason = 'not less than n';
-			else if (!value.gcd(n).equals(BigInteger.ONE)) reason = 'not coprime to n';
-			if (reason) rejectedShares.push({ position, shareIndex: share.shareIndex, reason });
-			else candidates.push({ position, shareIndex: share.shareIndex, value });
+			let value: typeof BigInteger | undefined;
+			if (!Number.isInteger(idx) || idx < 1 || idx > this.numParties) {
+				reason = `Invalid share index ${idx}: must be an integer between 1 and ${this.numParties}`;
+			} else {
+				try {
+					value = parseBigInteger(share.signatureShare, 'signatureShare');
+				} catch (e) {
+					reason = `malformed signature share: ${(e as Error).message}`;
+				}
+			}
+			if (!reason && value) {
+				if (value.signum() <= 0) reason = value.signum() === 0 ? 'zero' : 'negative';
+				else if (value.compareTo(n) >= 0) reason = 'not less than n';
+				else if (!value.gcd(n).equals(BigInteger.ONE)) reason = 'not coprime to n';
+			}
+			if (reason) rejectedShares.push({ position, shareIndex: idx, reason });
+			else candidates.push({ position, shareIndex: idx, value });
 		});
 		const describeRejected = () => rejectedShares.map(r => `index ${r.shareIndex} at position ${r.position} (${r.reason})`).join(', ');
 		if (candidates.length < this.threshold) {
@@ -263,7 +286,7 @@ export class ThresholdRSAVerifier {
 		let attempts = 0;
 		let capped = false;
 
-		for (const subset of kSubsets(candidates.length, this.threshold)) {
+		for (const subset of combineSubsetOrder(candidates.length, this.threshold)) {
 			if (attempts >= this.maxCombineAttempts) { capped = true; break; }
 			attempts++;
 			const selected = subset.map(i => candidates[i]);
@@ -278,7 +301,10 @@ export class ThresholdRSAVerifier {
 
 			const signature = this.finalizeSignature(w, msgBigIntToSign, vkuMutiple);
 			const used = new Set(indices);
-			const suspects = Array.from(new Set(attemptedSubsets.flat())).filter(i => !used.has(i)).sort((a, b) => a - b);
+			// present in every failed subset, absent from the verified one
+			const suspects = attemptedSubsets.length === 0 ? [] :
+				attemptedSubsets.reduce((acc, sub) => acc.filter(i => sub.includes(i)), attemptedSubsets[0].slice())
+					.filter(i => !used.has(i)).sort((a, b) => a - b);
 			return {
 				signature,
 				usedShareIndices: indices,

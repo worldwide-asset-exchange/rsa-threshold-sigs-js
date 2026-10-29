@@ -1,5 +1,4 @@
-import crypto from 'crypto';
-import { randomBigInt, BigInteger, generateSafePrime, randomBigIntCoprime, jacobiSymbol, safeFactorial } from './utils';
+import { randomBigInt, BigInteger, generateSafePrime, randomBigIntCoprime, jacobiSymbol, safeFactorial, isPrimeNative } from './utils';
 
 export type ThresholdRSAKeyConfig = {
 	bits: number,
@@ -57,7 +56,7 @@ export class ThresholdRSAKey {
 			// primality check rather than the in-house Miller-Rabin for robustness.
 			// (Shoup's paper additionally requires e > l, the number of parties,
 			// which is enforced in validateThresholdParams once numParties is known.)
-			if (!crypto.checkPrimeSync(BigInt(this._config.e))) {
+			if (!isPrimeNative(this._config.e)) {
 				throw new Error(`RSA exponent e (${this._config.e}) must be prime`);
 			}
 		} else {
