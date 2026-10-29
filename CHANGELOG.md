@@ -4,7 +4,7 @@ All notable changes to `@waxio/rsa-threshold-signatures` are documented here.
 Finding IDs (`SIG-n`) refer to the internal 2026-10 security review of the RNG
 signing library; the release ticket is WBP-2065.
 
-## 1.4.0 — 2026-10-29
+## 2.0.0 — 2026-10-29
 
 Security-hardening release. For valid inputs, every partial signature and every
 combined signature is **bit-identical to 1.3.0** — proven by the golden vectors
@@ -12,7 +12,37 @@ in `tests/fixtures/golden-1.3.0-*.json`, generated with the published 1.3.0
 build (git `8750c7e`) and replayed against this version in
 `tests/golden-1.3.0.test.ts`. The combined signature stays lower-case hex,
 exactly `bits/4` characters wide and `< n`; the partial-signature format is
-unchanged.
+unchanged. **Existing key material and share configuration upgrade drop-in**:
+a 1.3.0-era share set (hex strings, with or without a trailing newline or `0x`
+prefix) constructs, signs and combines unchanged (`tests/strict-parsing.test.ts`
+"drop-in upgrade").
+
+### Breaking changes (why this is 2.0.0, not 1.4.0)
+
+1. **`KeyEncryption` is no longer exported from the package index.** Import it
+   from `@waxio/rsa-threshold-signatures/dist/key-encryption`; it needs the
+   now-optional `secp256k1` peer dependency.
+2. **The unauthenticated AES-256-CBC fallback in `KeyEncryption.decrypt` is
+   removed** (`LEGACY_ALGORITHM` gone). 2-field `ciphertext:iv` payloads throw;
+   only the GCM `ciphertext:iv:authTag` form decrypts.
+3. **Proof verification (`verifySharesHash/Message`) requires
+   `verificationKeys[]` in the verifier config** and ignores the prover-supplied
+   `sharedVerificationKey`; without `verificationKeys` it throws. Proofs made by
+   earlier versions do not verify (new transcript framing). Combining
+   (`verifySignatureHash/Message`) is unaffected.
+4. **Strict input parsing.** Hex strings may carry surrounding whitespace and
+   one `0x`/`0X` prefix, but any interior non-hex character, a sign, or an empty
+   value now throws at construction instead of being silently skipped.
+   `threshold`/`numParties`/`bits` must be integers or decimal strings. Values
+   are range-checked (`(0, n)`, `n.bitLength() == bits`, `bits % 8 == 0`).
+5. **Combine failures throw `CombineError`** (still an `Error`) with new
+   messages for the cases 1.3.0 reported as `Intermediate verify signature is invalid` / `Combine signature is invalid`; duplicate indices are rejected
+   anywhere in the set, not only within the first `k`.
+6. `hashTranscript` output changed (domain tag + length framing).
+
+The only known consumer (the WAX RNG oracle) uses none of 1–3 and is covered by
+the drop-in guarantee for 4–5; it must bump its dependency explicitly
+(`^1.3.0` does not include 2.0.0).
 
 ### Combine path (`ThresholdRSAVerifier.verifySignatureHash/Message`)
 
@@ -44,17 +74,20 @@ unchanged.
 - `signatureShare` may be passed as a strict hex string as well as a
   `BigInteger`.
 - `threshold`, `numParties`, `bits` and `maxCombineAttempts` accept decimal
-  strings as well as numbers (consumers read them from env; 1.3.0 relied on
-  implicit coercion). Any other string throws a `TypeError` at construction.
+  strings (surrounding whitespace tolerated) as well as numbers (consumers
+  read them from env; 1.3.0 relied on implicit coercion). Any other value
+  throws a `TypeError` at construction.
 
 ### Parsing and self-checks
 
-- **SIG-5** `parseBigInteger` is strict: `[0-9a-fA-F]+` only (either case, any
-  length — odd length is fine, the string is an integer). Empty strings,
-  whitespace, `0x` prefixes, signs and non-hex characters throw instead of
-  being silently skipped by `jsbn`. Strings are still read **as hex**: a
-  decimal `"65537"` is `0x65537`; use `verifyShareConsistency` with
-  `expectedPublicKey` to catch that.
+- **SIG-5** `parseBigInteger` is strict: `[0-9a-fA-F]+` (either case, any
+  length — odd length is fine, the string is an integer), tolerating
+  surrounding whitespace (incl. a trailing newline from an env/secret value)
+  and one optional `0x`/`0X` prefix. Empty values (also after trimming), signs
+  and any interior non-hex character throw instead of being silently skipped
+  by `jsbn`. Strings are still read **as hex**: a decimal `"65537"` is
+  `0x65537`; use `verifyShareConsistency` with `expectedPublicKey` to catch
+  that. `verifyShareConsistency` is opt-in — constructors never call it.
 - **SIG-12** `ThresholdRSAShare`, `ThresholdRSAVerifier` and
   `ThresholdRSAKey.generateKeyPair` assert `n.bitLength() == bits` and
   `bits % 8 == 0` (hence hex width `== bits/4`); share/verifier constructors
@@ -130,11 +163,6 @@ unchanged.
 - `index` now also exports `BigInteger`, `parseBigInteger`, `toCanonicalHex`,
   `verifyShareConsistency`, `ShareConsistencyError`, `CombineError` and the
   new result types.
-- Note on versioning: removing `KeyEncryption` from the index and the CBC
-  fallback are strictly breaking changes shipped in a minor version because
-  the only known consumer (the WAX RNG oracle) uses neither and pins `^1.3.0`;
-  the proof-path `verificationKeys` requirement likewise affects no known
-  caller.
 
 ## 1.3.0 — 2026-05-25
 

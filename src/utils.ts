@@ -21,20 +21,32 @@ export function isBigInteger(value: any): boolean {
 		&& typeof value.bitLength === 'function';
 }
 
-// Strict hex → BigInteger. Accepts only [0-9a-fA-F]+ (either case, any length;
-// odd length is fine because the string is read as an integer, so "abc" == "0abc"
-// and leading zeros carry no meaning). Rejects empty strings, whitespace, "0x"
-// prefixes, signs and anything else — jsbn's own parser silently skipped every
-// non-hex character (SIG-5), which turned "65537\n" or a decimal exponent into a
-// different, well-formed number. BigInteger instances pass through unchanged.
+// Normalise a hex string the way an env/secret value may arrive: surrounding
+// whitespace (incl. a trailing newline) is trimmed and one optional 0x/0X prefix
+// is removed. Nothing else is touched — interior characters must all be hex.
+function normalizeHexString(value: string): string {
+	const trimmed = value.trim();
+	return /^0[xX]/.test(trimmed) ? trimmed.slice(2) : trimmed;
+}
+
+// Strict hex → BigInteger. Accepts [0-9a-fA-F]+ (either case, any length; odd
+// length is fine because the string is read as an integer, so "abc" == "0abc"
+// and leading zeros carry no meaning), optionally surrounded by whitespace and
+// optionally prefixed with 0x/0X (both tolerated so 1.3.0-era secrets with a
+// trailing newline or a prefix stay drop-in). Rejects empty strings (also after
+// trimming/prefix removal), signs and any interior non-hex character — jsbn's
+// own parser silently skipped every non-hex character (SIG-5), which turned
+// "1 001" or a decimal exponent into a different, well-formed number.
+// BigInteger instances pass through unchanged.
 // NOTE: a decimal string made of hex digits ("65537") is still read AS HEX; the
 // library has always treated strings as hex and this is not a change.
 export const parseBigInteger = (value: typeof BigInteger | string, label: string = 'value'): typeof BigInteger => {
 	if (typeof value === 'string') {
-		if (!HEX_RE.test(value)) {
-			throw new Error(`${label} must be a non-empty hex string ([0-9a-fA-F]+); got ${JSON.stringify(value.length > 40 ? value.slice(0, 40) + '…' : value)}`);
+		const hex = normalizeHexString(value);
+		if (!HEX_RE.test(hex)) {
+			throw new Error(`${label} must be a non-empty hex string ([0-9a-fA-F]+, optional 0x prefix and surrounding whitespace); got ${JSON.stringify(value.length > 40 ? value.slice(0, 40) + '…' : value)}`);
 		}
-		return new BigInteger(value, 16);
+		return new BigInteger(hex, 16);
 	}
 	if (isBigInteger(value)) {
 		return value;
@@ -58,7 +70,7 @@ export function toCanonicalHex(value: typeof BigInteger, bits: number): string {
 // anything else explicitly.
 export function coerceInteger(value: any, label: string): number {
 	if (typeof value === 'number' && Number.isInteger(value)) return value;
-	if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+	if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim());
 	throw new TypeError(`${label} must be an integer (number or decimal string); got ${JSON.stringify(value)}`);
 }
 
@@ -135,7 +147,7 @@ export function randomBigIntCoprime(n: typeof BigInteger): typeof BigInteger {
 // Hash a transcript (object) to create a challenge.
 // Framing (SIG-11): a fixed domain tag, then each element as a 4-byte big-endian
 // length prefix followed by its two's-complement big-endian bytes, so no two
-// distinct element sequences share a preimage. Changed in 1.4.0 — proofs made
+// distinct element sequences share a preimage. Changed in 2.0.0 — proofs made
 // by earlier versions do not verify (proofs are not persisted anywhere).
 const TRANSCRIPT_TAG = Buffer.from('waxio/rsa-threshold-signatures/shoup-proof/v2', 'utf8');
 export function hashTranscript(transcript: any) {

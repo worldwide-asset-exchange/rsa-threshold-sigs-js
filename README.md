@@ -83,8 +83,12 @@ index(es). `threshold` / `numParties` / `bits` may be numbers or decimal strings
 - The share exponentiation is blinded and uses a fixed-pattern ladder; it is **not**
   constant-time (V8 `BigInt`), so keep signers off shared hosts where a co-tenant
   can time them.
-- All hex input is parsed strictly (`[0-9a-fA-F]+`, either case, any length).
+- All hex input is parsed strictly (`[0-9a-fA-F]+`, either case, any length;
+  surrounding whitespace and one `0x` prefix are tolerated, anything else throws).
   Strings are hex: a decimal `"65537"` is read as `0x65537`.
+- Upgrading from 1.3.0 needs no change to key material or share configuration;
+  `verifyShareConsistency` is opt-in (constructors never run it). See
+  [CHANGELOG.md](CHANGELOG.md) for the breaking changes in 2.0.0.
 - `bits` must equal `n.bitLength()` (and `bits % 8 == 0`); constructors throw otherwise.
 
 #### Proofs of correctness (off by default)

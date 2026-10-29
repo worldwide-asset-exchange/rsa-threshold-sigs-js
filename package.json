@@ -1,6 +1,6 @@
 {
   "name": "@waxio/rsa-threshold-signatures",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "description": "Library for RSA Threshold signatures",
   "main": "dist/index.js",
   "files": [

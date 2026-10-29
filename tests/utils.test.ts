@@ -33,7 +33,7 @@ describe('hashTranscript', () => {
       xp: new forge.jsbn.BigInteger('60')
     };
 
-    // Framing since 1.4.0 (SIG-11): sha256(tag || (len32be || bytes) for each element in order).
+    // Framing since 2.0.0 (SIG-11): sha256(tag || (len32be || bytes) for each element in order).
     // Expected value computed here independently of the implementation.
     const h = crypto.createHash('sha256').update(Buffer.from('waxio/rsa-threshold-signatures/shoup-proof/v2', 'utf8'));
     for (const x of [10, 20, 30, 40, 50, 60]) {
@@ -42,7 +42,7 @@ describe('hashTranscript', () => {
     }
     const result = hashTranscript(transcript);
     expect(result.toString(16).padStart(64, '0')).toBe(h.digest('hex'));
-    // pre-1.4.0 unframed value, must no longer be produced
+    // pre-2.0.0 unframed value, must no longer be produced
     expect(result.toString(16)).not.toBe('6e6db0c1e9357a0f1543a26d526d8548ae9867a4a64de41c2752e13f77bcfa13');
   });
 });

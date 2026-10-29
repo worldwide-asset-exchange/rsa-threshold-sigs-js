@@ -21,7 +21,7 @@ describe('ThresholdRSAShare ThresholdRSAVerifier', () => {
       publicKey: shares.publicKey,
       verificationKey: shares.sharedKey.v,
       vku: shares.sharedKey.vku,
-      // dealer-published per-party verification keys (required for proof verification since 1.4.0)
+      // dealer-published per-party verification keys (required for proof verification since 2.0.0)
       verificationKeys: shares.sharedKey.verificationKeys,
     });
   });

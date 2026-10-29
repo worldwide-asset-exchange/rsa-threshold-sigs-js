@@ -26,21 +26,39 @@ describe("parseBigInteger is strict", () => {
   });
 
   it.each([
+    [" 10001", "leading space"],
+    ["10001\n", "trailing newline (env/secret value)"],
+    ["\t10001 \r\n", "surrounding whitespace"],
+    ["0x10001", "0x prefix"],
+    ["0X10001", "0X prefix"],
+    [" 0x10001\n", "prefix and whitespace"],
+    ["1e5", "hex digits that look like a float"],
+  ])("tolerates %j (%s) as the same integer", (input, _label) => {
+    expect(parseBigInteger(input).toString(16)).toBe(
+      parseBigInteger(input.trim().replace(/^0[xX]/, "")).toString(16)
+    );
+    expect(
+      parseBigInteger(input).equals(
+        new BigInteger(input.trim().replace(/^0[xX]/, ""), 16)
+      )
+    ).toBe(true);
+  });
+
+  it.each([
     ["", "empty"],
+    ["   ", "whitespace only"],
+    ["0x", "prefix only"],
     ["zz", "non-hex letters"],
     ["10 001", "inner whitespace"],
-    ["10001\n", "trailing newline"],
-    [" 10001", "leading space"],
-    ["0x10001", "0x prefix"],
+    ["10\n001", "inner newline"],
+    ["0x 10001", "space after prefix"],
+    ["0x0x10001", "double prefix"],
     ["-1", "sign"],
     ["+1", "sign"],
-    ["1e5", "looks like hex but is fine"], // sanity: this one is valid hex and must NOT throw
-  ])("%s (%s)", (input, label) => {
-    if (label === "looks like hex but is fine") {
-      expect(parseBigInteger(input).toString(16)).toBe("1e5");
-    } else {
-      expect(() => parseBigInteger(input)).toThrow(/hex/i);
-    }
+    ["1_000", "separator"],
+    ["65537.0", "decimal point"],
+  ])("rejects %j (%s)", (input, _label) => {
+    expect(() => parseBigInteger(input)).toThrow(/hex/i);
   });
 
   it("rejects non-string, non-BigInteger values", () => {
@@ -70,7 +88,7 @@ describe("ThresholdRSAShare construction checks", () => {
       () =>
         new ThresholdRSAShare({
           ...shareConfig(fx, 0),
-          publicKey: { n: fx.publicKey.n, e: "65537\n" },
+          publicKey: { n: fx.publicKey.n, e: "655 37" },
         })
     ).toThrow(/hex/i);
   });
@@ -82,6 +100,71 @@ describe("ThresholdRSAShare construction checks", () => {
     expect(
       () => new ThresholdRSAShare({ ...shareConfig(fx, 0), bits: 1020 })
     ).toThrow(/multiple of 8|bits/);
+  });
+
+  it("accepts 1.3.0-era config values with a trailing newline or 0x prefix and signs identically (drop-in upgrade)", () => {
+    const cfg = shareConfig(fx, 0);
+    const messy = {
+      bits: "1024\n" as any,
+      sharedKey: cfg.sharedKey + "\n",
+      publicKey: { n: "0x" + cfg.publicKey.n, e: " " + cfg.publicKey.e + "\n" },
+      verificationKey: "0X" + cfg.verificationKey,
+      verificationKeyShare: cfg.verificationKeyShare + "\r\n",
+      vku: "\t" + cfg.vku,
+    };
+    const clean = new ThresholdRSAShare(cfg);
+    const tolerant = new ThresholdRSAShare(messy);
+    const h =
+      "da5f53a808910d45b50eea5d4ddf6a90e1951f10b9bb711ad0a75f6f55c7fe9f";
+    expect(
+      tolerant
+        .signHash(h)
+        .signatureShare.equals(clean.signHash(h).signatureShare)
+    ).toBe(true);
+    expect(tolerant.verifyConsistency().ok).toBe(true);
+    const v = new ThresholdRSAVerifier({
+      ...verifierConfig(fx),
+      publicKey: messy.publicKey,
+      vku: messy.vku,
+      verificationKey: messy.verificationKey,
+      bits: " 1024 " as any,
+      threshold: "2\n" as any,
+      numParties: "3" as any,
+    });
+    expect(
+      v.verifySignatureHash(h, [
+        { shareIndex: 1, signatureShare: tolerant.signHash(h).signatureShare },
+        {
+          shareIndex: 2,
+          signatureShare: new ThresholdRSAShare(shareConfig(fx, 1)).signHash(h)
+            .signatureShare,
+        },
+      ]).length
+    ).toBe(256);
+  });
+
+  it("assertModulusBits: a 4096-bit modulus is 1024 hex chars with top nibble 8..f (shape of the live key)", () => {
+    const fx4096 = loadThrowawayKey(4096);
+    expect(fx4096.publicKey.n.length).toBe(1024);
+    expect(/^[89a-f]/.test(fx4096.publicKey.n)).toBe(true);
+    expect(() => new ThresholdRSAShare(shareConfig(fx4096, 0))).not.toThrow();
+    // same width but top nibble 0..7 → bitLength < 4096 → rejected
+    const short = {
+      ...shareConfig(fx4096, 0),
+      publicKey: {
+        n: "7" + fx4096.publicKey.n.slice(1),
+        e: fx4096.publicKey.e,
+      },
+    };
+    expect(() => new ThresholdRSAShare(short)).toThrow(/bitLength/);
+    // 1023 hex chars (leading zero nibble dropped) is the same integer and still passes: width is derived from bits, not the string
+    expect(
+      () =>
+        new ThresholdRSAShare({
+          ...shareConfig(fx4096, 0),
+          publicKey: { n: "0" + fx4096.publicKey.n, e: fx4096.publicKey.e },
+        })
+    ).not.toThrow();
   });
 
   it("rejects out-of-range values (0 or >= n)", () => {

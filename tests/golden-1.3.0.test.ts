@@ -1,4 +1,4 @@
-// Invariant (WBP-2065): for valid inputs, 1.4.0 must produce exactly the partial
+// Invariant (WBP-2065): for valid inputs, 2.0.0 must produce exactly the partial
 // and combined signatures that the published 1.3.0 dist produced. The golden
 // files were generated against the 1.3.0 build (git 8750c7e) with the throwaway
 // fixture keys; see tests/fixtures/*.json `_comment`.

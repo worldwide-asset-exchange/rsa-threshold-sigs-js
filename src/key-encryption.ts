@@ -50,7 +50,7 @@ export class KeyEncryption {
 		}
 		if (parts.length === 2) {
 			// Unauthenticated AES-CBC payloads from versions < 1.3 are no longer
-			// accepted (removed in 1.4.0, SIG-6): a 2-field payload could be
+			// accepted (removed in 2.0.0, SIG-6): a 2-field payload could be
 			// bit-flipped and would decrypt "successfully" to altered plaintext.
 			throw new Error('Invalid encrypted payload: legacy unauthenticated CBC format ("ciphertext:iv") is not supported; re-encrypt with encrypt()');
 		}

@@ -29,7 +29,7 @@ export type RSASignatureShare = {
 		z: typeof BigInteger;
 		c: typeof BigInteger;
 	};
-	// Deprecated since 1.4.0 and ignored: the verifier uses its configured
+	// Deprecated since 2.0.0 and ignored: the verifier uses its configured
 	// verificationKeys[shareIndex - 1] instead of a prover-supplied value (SIG-1).
 	sharedVerificationKey?: typeof BigInteger;
 	shareIndex: number;
