@@ -1,11 +1,12 @@
+// Dealer-ceremony helper: wraps a key share to one party with ECDH(secp256k1) +
+// AES-256-GCM. NOT exported from the package index and NOT on the signing path;
+// `secp256k1` is an optional peer dependency. Import explicitly from
+// '@waxio/rsa-threshold-signatures/dist/key-encryption'.
 import secp256k1 from 'secp256k1';
 import crypto from 'crypto';
 
 export class KeyEncryption {
 	public static ALGORITHM = 'aes-256-gcm';
-	// Legacy unauthenticated algorithm. New encryptions always use GCM; this is
-	// kept only so decrypt() can still read payloads produced by versions < 1.3.
-	public static LEGACY_ALGORITHM = 'aes-256-cbc';
 	// 96-bit nonce, recommended for GCM. The encryption key is derived from a
 	// *static* ECDH shared secret, so it is reused across every encrypt() call
 	// for a given (sender, receiver) pair. GCM security relies on never reusing
@@ -48,11 +49,12 @@ export class KeyEncryption {
 			return this.decryptGcm(parts[0], parts[1], parts[2]);
 		}
 		if (parts.length === 2) {
-			// Legacy CBC payload from versions < 1.3. Decrypt for read-back only;
-			// encrypt() always emits the authenticated GCM format.
-			return this.decryptCbcLegacy(parts[0], parts[1]);
+			// Unauthenticated AES-CBC payloads from versions < 1.3 are no longer
+			// accepted (removed in 1.4.0, SIG-6): a 2-field payload could be
+			// bit-flipped and would decrypt "successfully" to altered plaintext.
+			throw new Error('Invalid encrypted payload: legacy unauthenticated CBC format ("ciphertext:iv") is not supported; re-encrypt with encrypt()');
 		}
-		throw new Error('Invalid encrypted payload: expected "ciphertext:iv:authTag" (GCM) or "ciphertext:iv" (legacy CBC)');
+		throw new Error('Invalid encrypted payload: expected "ciphertext:iv:authTag" (GCM)');
 	}
 
 	private decryptGcm(cypherText: string, ivHex: string, authTagHex: string) {
@@ -64,18 +66,6 @@ export class KeyEncryption {
 		const decipher = crypto.createDecipheriv(KeyEncryption.ALGORITHM, this._encryptionKey, iv) as crypto.DecipherGCM;
 		// Authenticates the ciphertext; final() throws if it has been tampered with.
 		decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
-
-		const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-		return decrypted.toString();
-	}
-
-	private decryptCbcLegacy(cypherText: string, ivHex: string) {
-		if (!cypherText || !ivHex) {
-			throw new Error('Invalid encrypted payload: empty field');
-		}
-		const iv = Buffer.from(ivHex, 'hex');
-		const encryptedData = Buffer.from(cypherText, 'hex');
-		const decipher = crypto.createDecipheriv(KeyEncryption.LEGACY_ALGORITHM, this._encryptionKey, iv);
 
 		const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
 		return decrypted.toString();
