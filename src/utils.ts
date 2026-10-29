@@ -9,11 +9,65 @@ Object.defineProperty(BigInteger, 'TWO', {
     }
 });
 
-export const parseBigInteger = (value: typeof BigInteger | string) => {
+const HEX_RE = /^[0-9a-fA-F]+$/;
+
+// Duck-typed check for a jsbn BigInteger. `instanceof` is deliberately avoided:
+// a consumer may hand us a BigInteger built from its own copy of node-forge.
+export function isBigInteger(value: any): boolean {
+	return value !== null && typeof value === 'object'
+		&& typeof value.compareTo === 'function'
+		&& typeof value.modPow === 'function'
+		&& typeof value.toString === 'function'
+		&& typeof value.bitLength === 'function';
+}
+
+// Strict hex → BigInteger. Accepts only [0-9a-fA-F]+ (either case, any length;
+// odd length is fine because the string is read as an integer, so "abc" == "0abc"
+// and leading zeros carry no meaning). Rejects empty strings, whitespace, "0x"
+// prefixes, signs and anything else — jsbn's own parser silently skipped every
+// non-hex character (SIG-5), which turned "65537\n" or a decimal exponent into a
+// different, well-formed number. BigInteger instances pass through unchanged.
+// NOTE: a decimal string made of hex digits ("65537") is still read AS HEX; the
+// library has always treated strings as hex and this is not a change.
+export const parseBigInteger = (value: typeof BigInteger | string, label: string = 'value'): typeof BigInteger => {
 	if (typeof value === 'string') {
+		if (!HEX_RE.test(value)) {
+			throw new Error(`${label} must be a non-empty hex string ([0-9a-fA-F]+); got ${JSON.stringify(value.length > 40 ? value.slice(0, 40) + '…' : value)}`);
+		}
 		return new BigInteger(value, 16);
 	}
-	return value;
+	if (isBigInteger(value)) {
+		return value;
+	}
+	throw new TypeError(`${label} must be a hex string or a BigInteger; got ${value === null ? 'null' : typeof value}`);
+}
+
+// Lower-case hex, zero-padded to exactly bits/4 characters. Throws if the value
+// does not fit (it never should for a value < n when n.bitLength() == bits).
+export function toCanonicalHex(value: typeof BigInteger, bits: number): string {
+	if (value.signum() < 0) throw new Error('toCanonicalHex: negative value');
+	const hex = value.toString(16);
+	const width = bits / 4;
+	if (hex.length > width) throw new Error(`toCanonicalHex: value has ${hex.length} hex digits, wider than bits/4 = ${width}`);
+	return hex.padStart(width, '0');
+}
+
+// Structural check shared by every place a modulus and a bit size meet (SIG-12):
+// the on-chain verifier requires len(sig_hex) == len(modulus_hex) and the library
+// pads signatures to bits/4, so both only line up when n.bitLength() == bits.
+export function assertModulusBits(n: typeof BigInteger, bits: number, label: string = 'publicKey.n') {
+	if (!Number.isInteger(bits) || bits <= 0 || bits % 8 !== 0) {
+		throw new Error(`bits must be a positive multiple of 8; got ${bits}`);
+	}
+	if (n.bitLength() !== bits) {
+		throw new Error(`${label}.bitLength() is ${n.bitLength()} but bits is ${bits}`);
+	}
+	if (n.toString(16).length !== bits / 4) {
+		throw new Error(`${label} hex width ${n.toString(16).length} != bits/4 = ${bits / 4}`);
+	}
+	if (!n.testBit(0)) {
+		throw new Error(`${label} must be odd`);
+	}
 }
 
 export function modPowNative(base, exponent, modulus) {
@@ -39,7 +93,7 @@ function uniformRandomBelow(n: typeof BigInteger): typeof BigInteger {
 	const excessBits = numBytes * 8 - bits;
 	let result: typeof BigInteger;
 	do {
-		const bytes = Buffer.from(forge.util.bytesToHex(forge.random.getBytesSync(numBytes)), 'hex');
+		const bytes = crypto.randomBytes(numBytes);
 		// Clear the high bits that overflow n's bit length so the candidate is
 		// uniform over [0, 2^bits) rather than [0, 2^(numBytes*8)).
 		bytes[0] &= 0xff >> excessBits;
@@ -62,23 +116,83 @@ export function randomBigIntCoprime(n: typeof BigInteger): typeof BigInteger {
 	return random;
 }
 
-// Hash a transcript (object) to create a challenge
+// Hash a transcript (object) to create a challenge.
+// Framing (SIG-11): a fixed domain tag, then each element as a 4-byte big-endian
+// length prefix followed by its two's-complement big-endian bytes, so no two
+// distinct element sequences share a preimage. Changed in 1.4.0 — proofs made
+// by earlier versions do not verify (proofs are not persisted anywhere).
+const TRANSCRIPT_TAG = Buffer.from('waxio/rsa-threshold-signatures/shoup-proof/v2', 'utf8');
 export function hashTranscript(transcript: any) {
-	let vBuf = Buffer.from(transcript.v.toByteArray());
-	let xtBuf = Buffer.from(transcript.xt.toByteArray());
-	let viBuf = Buffer.from(transcript.vi.toByteArray());
-	let xi2Buf = Buffer.from(transcript.xi2.toByteArray());
-	let vpBuf = Buffer.from(transcript.vp.toByteArray());
-	let xpBuf = Buffer.from(transcript.xp.toByteArray());
+	const h = crypto.createHash('sha256');
+	h.update(TRANSCRIPT_TAG);
+	for (const field of ['v', 'xt', 'vi', 'xi2', 'vp', 'xp']) {
+		const bytes = Buffer.from(transcript[field].toByteArray());
+		const len = Buffer.alloc(4);
+		len.writeUInt32BE(bytes.length, 0);
+		h.update(len);
+		h.update(bytes);
+	}
+	return new BigInteger(h.digest('hex'), 16);
+}
 
-	let size = vBuf.length + xtBuf.length + viBuf.length + xi2Buf.length + vpBuf.length + xpBuf.length;	
+// Blinded modular exponentiation with a SECRET exponent (SIG-8).
+//   r ← random in Z_n^*;  y = (base·r)^exp · (r^exp)^{-1} mod n = base^exp mod n
+// The exponentiation that touches `exp` therefore never runs on an input the
+// caller (or a requester upstream of the caller) chose. Classic RSA blinding
+// unblinds with r^{-1} because the exponent is d and (r^e)^d = r; a Shoup
+// share exponent 2·s_i has no public inverse exponent, so r^exp is computed
+// explicitly — one extra exponentiation on a random base, still blinded.
+// Output is bit-identical to the unblinded computation (tested).
+export function blindedModPow(base: typeof BigInteger, exp: typeof BigInteger, n: typeof BigInteger): typeof BigInteger {
+	const nBig = BigInt('0x' + n.toString(16));
+	const expBig = BigInt('0x' + exp.toString(16));
+	const baseModN = base.mod(n);
+	if (baseModN.signum() === 0) return BigInteger.ZERO;
+	const r = randomBigIntCoprime(n);
+	const rBig = BigInt('0x' + r.toString(16));
+	const blinded = (BigInt('0x' + baseModN.toString(16)) * rBig) % nBig;
+	const yBlinded = modPowNative(blinded, expBig, nBig);
+	const rExp = modPowNative(rBig, expBig, nBig);
+	const rExpInv = new BigInteger(rExp.toString(16), 16).modInverse(n);
+	const y = (yBlinded * BigInt('0x' + rExpInv.toString(16))) % nBig;
+	return new BigInteger(y.toString(16), 16);
+}
 
-	const buff = Buffer.concat([vBuf, xtBuf, viBuf, xi2Buf, vpBuf, xpBuf], size);
+// The one digest→integer encoder used by sign, combine and proof (SIG-2):
+// `hash` is a SHA-256 digest as hex (strict) or BigInteger, at most 256 bits;
+// it is zero-padded to 32 bytes and, with pkcs1, wrapped in EMSA-PKCS1-v1_5
+// for a bits/8-byte modulus. verifySharesHash previously skipped the padding and
+// dropped a nibble for ~1/16 of digests.
+export function digestToSigningInteger(hash: typeof BigInteger | string, bits: number, pkcs1: boolean): typeof BigInteger {
+	const digest = parseBigInteger(hash, 'hash');
+	if (digest.bitLength() > 256) {
+		throw new Error('Message hash must be 256 bits or less');
+	}
+	if (!pkcs1) return digest;
+	const digestBytes = Buffer.from(digest.toString(16).padStart(64, '0'), 'hex');
+	return new BigInteger(emsaPkcs1v15encode(digestBytes, bits).toString('hex'), 16);
+}
 
-	const hash = crypto.createHash('sha256')
-							.update(buff)
-							.digest('hex');
-	return new BigInteger(hash, 16);
+// Shoup §4: if J(x|n) = −1, sign x̃ = x·u^e instead; the combiner divides u back out.
+export function applyJacobiLift(x: typeof BigInteger, n: typeof BigInteger, e: typeof BigInteger, vku: typeof BigInteger): { x: typeof BigInteger, lifted: boolean } {
+	if (jacobiSymbol(x, n) === -1) {
+		return { x: x.multiply(vku.modPow(e, n)).mod(n), lifted: true };
+	}
+	return { x, lifted: false };
+}
+
+// k-element index subsets of [0, count) in lexicographic order (first k first).
+export function* kSubsets(count: number, k: number): Generator<number[]> {
+	if (k > count || k <= 0) return;
+	const idx = Array.from({ length: k }, (_, i) => i);
+	while (true) {
+		yield idx.slice();
+		let i = k - 1;
+		while (i >= 0 && idx[i] === count - k + i) i--;
+		if (i < 0) return;
+		idx[i]++;
+		for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
+	}
 }
 
 // Calculate Lagrange coefficient
