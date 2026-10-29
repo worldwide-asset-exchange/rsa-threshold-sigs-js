@@ -33,8 +33,17 @@ describe('hashTranscript', () => {
       xp: new forge.jsbn.BigInteger('60')
     };
 
+    // Framing since 1.4.0 (SIG-11): sha256(tag || (len32be || bytes) for each element in order).
+    // Expected value computed here independently of the implementation.
+    const h = crypto.createHash('sha256').update(Buffer.from('waxio/rsa-threshold-signatures/shoup-proof/v2', 'utf8'));
+    for (const x of [10, 20, 30, 40, 50, 60]) {
+      const len = Buffer.alloc(4); len.writeUInt32BE(1, 0);
+      h.update(len); h.update(Buffer.from([x]));
+    }
     const result = hashTranscript(transcript);
-    expect(result.toString(16)).toBe('6e6db0c1e9357a0f1543a26d526d8548ae9867a4a64de41c2752e13f77bcfa13');
+    expect(result.toString(16).padStart(64, '0')).toBe(h.digest('hex'));
+    // pre-1.4.0 unframed value, must no longer be produced
+    expect(result.toString(16)).not.toBe('6e6db0c1e9357a0f1543a26d526d8548ae9867a4a64de41c2752e13f77bcfa13');
   });
 });
 
@@ -106,10 +115,25 @@ describe('jacobiSymbol', () => {
     const result1 = jacobiSymbol(a1, n1);
     expect(result1).toBe(-1);
 
-    const a2 = new forge.jsbn.BigInteger('FED9EFBD5A8EF6820D639DBCB831DAF9D6308312CC73D6188BEB54A9A148E29A', 16);
-    const n2 = new forge.jsbn.BigInteger('63baca880eade29f1490a070d147cf2f7108316eda444c88c5850f730e9a465cc251e49595e9bbcd320814a692b0812291e3345445cd3068e92d4309b8d2f05477fb69df81bab294001a9c9c070982f1af0d02ff1d4ce3a482f789bc34a2aabf91c1c84e32641e5c291f9d3bb159b62125e011c554a5060d9c6f632945303df585d0cd3322e401410061615036f2d5e8374d457f30fddaaa0f726a4732294a64c52140c94a5388054a83c8944669b0e314466f8d586a6cd954df6770d5c4278902d94de66bdc1c79d6b876bde5558c046e9efb447add81ab45eda5041cd5dce439c8d02b2cfaae483c3d011e186677c7ad504c207f69008fb342e2bfe3f0ca0c858fe4bb8618000cffe9f392200bd8f8dffaeb59c4ea051a3178d9f2fb7745f90d9b509939d3cdbe54745a910af5608bbf52b7982c03467e511f3bf6b41d0ecaed2043af7d83cfb9c5b0d709de7aa023c7adff1fbb0597c12078b15a821a2023ff33e90a4f67b36954ca0782e2972a2d4af48acd063abad90b877fa1a7a02e976d88d543584a7af05dea9c0febfd435749cdde4ccd57b3f63a3afe259d49d15afa64d0304ea36a0b79191f0f595feb6f78f33ff097f617df23674782c15e57d6f74564de61bb6c7b90d09ddcc881315f2057e6e6789adcdc682bbe2e972dab41d74f3c754cc492cb4c01940967dba07020550d5ffb43d91ef25c2c608a0ac335', 16);
-    const result2 = jacobiSymbol(a2, n2);
-    expect(result2).toBe(1);
+    // large operands: compare with an independent native-BigInt Jacobi implementation
+    const jacobiRef = (a: bigint, n: bigint): number => {
+      a %= n; if (a < 0n) a += n;
+      let r = 1;
+      while (a !== 0n) {
+        while ((a & 1n) === 0n) { a >>= 1n; const m8 = n % 8n; if (m8 === 3n || m8 === 5n) r = -r; }
+        [a, n] = [n, a];
+        if (a % 4n === 3n && n % 4n === 3n) r = -r;
+        a %= n;
+      }
+      return n === 1n ? r : 0;
+    };
+    for (let i = 0; i < 20; i++) {
+      const nHex = crypto.randomBytes(128).toString('hex');
+      const nBig = BigInt('0x' + nHex) | 1n; // odd
+      const aHex = crypto.randomBytes(32).toString('hex');
+      const got = jacobiSymbol(new forge.jsbn.BigInteger(aHex, 16), new forge.jsbn.BigInteger(nBig.toString(16), 16));
+      expect(got).toBe(jacobiRef(BigInt('0x' + aHex), nBig));
+    }
   });
 
   it('should throw error for even n', () => {
@@ -249,9 +273,10 @@ describe('modPowNative', () => {
     const res1 = modPowNative(88n, 2n, 65n);
     expect(res1).toBe(9n);
 
-    const base1 = BigInt('0xa9db737359a33726b9338006725a116083b2eac503cd595d38176cec3c9aecc21c5dbe9ad15ee1b807d0cba555f57a58757919dc2d2a08f9e6647b536fbacb8473a7a82a9d92899997dec1ab844e9ff2147b34f7f9984f28a071a9aba9b1650db689d1542a5178ed53bba25e102b1517655333f354b5a251a5c67212ab2b193c4c4fec8fd9fc24feac9a3dde8aa355717711a267cadeebbbc823f2242a71662b6cdf9e615f0ca094593227a2bb2332cc2560c5c5d3812a9ce1f08a5f977baf2495ed990f09d2cff1d75ece396431a7be0db73d9934bc63b09baf27ed586f3776169e4fb8bec591e858e1ce1b93df3f2996607b0580023927dccfff87adaef09fe23efa2928214f045abe66480be68139d3d44a9d21b5ad3440de0a73be9ef469104ddc5cbdd6bf59b5a692145c530d69899b34296289e5515265c7c9ad89eb49d18f4a1a5dd89d25276824092629e5dbfb40b3b953d3d67199048d30f48360a1235e8076a07c5183f5200d0e8011384d4839af5b890c30ce688cd1f223404979b43af23268b0085b55c5ef3f6872a55b82e0ece2ddddc62b05eca58bdb0abb31fd1b843553c167d9f8872d553af0133e7a65db04545d7b96b8ccda32f325b2bf421cebd9f7c7c67374df23da016d8cb6c5271308107ad41f97e1544a6b05eeba1e639c687b27fdcea667ab6bdafae62db9cf6d85df4584c0b735eee28d42c925');
-    const exponent1 = BigInt('0xafa4d31c69e791432ff8f7615c3b166cb2608c63784676654dc9266dfd5c285935880a79a07bd536b81796c1f09e8f308d8b695c83b01be65e08077235144829958231477592d0921324d89b08ff6a05d065aedfd18358799b3934bf4c8dd1831c536226a161c18422714425582d205bda2c84bdc5128966ac351c2b3ed4d6d17dadb8ef3f9052039b7a125edad33fd0819a57c6716ecb48a6297e1bc6a90ac6deb6bb9bd73cf1530eceeadb01b78ba1813ef9103d183140ed36a422bad571cbfef051bd99de319cdfbd120cb974c5f27fa344b412a25269a747f8224ee8227db1eec91b311920e205564f703ad558bfec8be9867f80a940e0954f4ae01e637b5fa93b820de864b07de1b532774bee81f966bfa237a9ee7af0482d96829498d7e9ceb972a41073bea0199263c9b1ea808d12b475d32844b091cccc63f6550aadcdd0aa1536849b0c6ef1d676601636b9c62d9cabe1f1e275cf3bfe68b47c62b0cc0a933b82de056233dadcef6dfb2e7ddcfb55719c577b6f793eb470af4f9cb63c82518174704c82a1bdb401888d0643a7c675a945574ed3109c548c4e783f5eddcb0a9ff56c3a70917a43b2ca4182c2e5b0120c5b0627a3c92f3b8f36905ee0ae3bbcb11ddb461b51536ae197a8e16f7ed079e7cbaf772c9d2074ae5c02bf134bb653aa6490fa223989774e70a886dfbd573f2c1d28d3f2ffbbda4a4eb4dbc');
-    const n1 = BigInt('0x79e0040b8c80e4e92810368f4395eef926f94def5354e624ef05882655c49e635d4209db61f987b1279999f6e61047222563caffb339d385433c0ffb8ff9c432a2fd7e6b2e0cc43b851068e40a81f536f67a19667abfb4ad0e8ef2b4e4f480a4005b74c169b311e9e095982c9ee3c613e5173613cc3d8b04ca6cb8728764f949d7c2f96bc76d977e7c3277e1b4109ea9e105f6f59a30a8bfc01018fda357f1a0d1b0a05fb68c031dd5f07ff0f6b3128f00cc55cb274e6998bbe9e8552a21fbc9fe51ca2a37c158b01c3aefed66c44f03bde450d04c55ce8cb5e0e9866bbcdc9677372389fe3bf511b8a4f13f8485a30fbe372ffe97477bb7a71a22b0367827d8054fa32b3246647eeb15bf4a860d7cf3d0c091cb8b53d6010c8e67c5d5eaf13291c253e8b1f5f59dd4c09055350b557b95be588c56543bbb3881714efc3fffbd07d65fe1af32b7ccb708e6e15e1c3db12fde80c08967c45e65db2c3dd337db4e0655317d2e484560bde21e47022bd31054d3e85483dfef91323e844f4928559f977d02f4fadcd888e46436fb0c7235466c0dba1361b5725d477e5737f5e9f057c32bb2b849b9f663a19915703500a67d010619de1844d5b4140800d5b423f3b00f1ec22e4b0e50d354cbda714a1e44783010636bb5bd880a3508022024050d8861b74cd206a739ab165a234fa6a6ed917d8f21cab11ea43e1a9bd017b3c683b4');
+    // random 4096-bit operands (no key material in fixtures)
+    const base1 = BigInt('0x' + crypto.randomBytes(512).toString('hex'));
+    const exponent1 = BigInt('0x' + crypto.randomBytes(512).toString('hex'));
+    const n1 = BigInt('0x' + crypto.randomBytes(512).toString('hex')) | 1n;
     const res2 = modPowNative(base1, exponent1, n1);
     const res2Ref = parseBigInteger(base1.toString(16)).modPow(parseBigInteger(exponent1.toString(16)), parseBigInteger(n1.toString(16)));
     expect(res2.toString()).toBe(res2Ref.toString());
