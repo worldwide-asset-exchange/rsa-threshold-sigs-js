@@ -228,7 +228,15 @@ describe("combine: k-subset retry (SIG-4)", () => {
       partialFor(signers[2], 2, m),
     ]);
     expect(r.usedShareIndices).toEqual([2, 3]);
-    expect(r.suspectShareIndices).toEqual([1]);
+    // The alien partial is a residue of a different random modulus. When it happens to be >= n it
+    // is rejected before any subset is tried (rejectedShares, "not less than n"); otherwise it passes
+    // the range check and the k-subset search names it (suspectShareIndices). Either way index 1 is
+    // the only share named. Asserting only suspectShareIndices made this test fail about half the time.
+    const named = [
+      ...r.suspectShareIndices,
+      ...r.rejectedShares.map((s) => s.shareIndex),
+    ];
+    expect(named).toEqual([1]);
   });
 
   it("with only k shares and one bad, throws NO_VALID_SUBSET naming the subset tried", () => {
