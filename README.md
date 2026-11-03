@@ -117,10 +117,15 @@ every share and (in memory) the whole private key. Intended path:
    fingerprint and the destruction step.
 4. Each party runs `verifyShareConsistency` on its decrypted share before it signs.
 
+The full procedure both sides follow — roles, parameters, member wrapping keys,
+`script/wrapShares.ts`, hand-over, member verification, attestation — is
+[docs/KEY-CEREMONY.md](docs/KEY-CEREMONY.md).
+
 ### Sample scripts
 
 ```bash
 $ yarn ts-node script/generateKey.ts        # dealer (see above)
+$ yarn ts-node script/wrapShares.ts         # dealer: check + wrap every share to its member (docs/KEY-CEREMONY.md 5.4)
 $ yarn ts-node script/signShare.ts          # self-check, sign, prove, combine, verify with node-rsa
 ```
 
