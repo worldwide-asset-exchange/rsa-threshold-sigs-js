@@ -101,7 +101,7 @@ git rev-parse HEAD        # compare with the commit shown on that tag's release 
 yarn install --frozen-lockfile   # installs secp256k1 + ts-node and builds dist/
 ```
 
-`script/wrapShares.ts` is not in `v2.0.0`; use the first tag that ships it (`v2.0.1` or later).
+`script/wrapShares.ts` is not in `v2.0.0`; `v2.0.1` is the first tag that ships it.
 Witnesses record the exact tag and commit hash — both go into the attestation (5.8). Now
 disconnect from the network.
 
@@ -359,12 +359,16 @@ that layout:
 | `bits`, `threshold`, `numParties`  | same names                                  |
 | `shareIndex`                       | your index `i`                              |
 
-**Stage, do not restart.** Write the new environment file next to the live one (operator
-guide 3.1) and leave the process running on the old key: the chain still carries the old
-version, so a restart now fails the boot check. The switch — drain, `setpubkey`, restart,
-resume, `retirepubkey` — is governance runbook 5.1 / 5.2, and it tells you when to restart.
-Afterwards keep `wrap.key` plus `member.json` offline as the backup of your share; delete
-`share.hex` from anywhere but the environment file.
+**Stage and start now.** Write a **second** environment file next to the live one (operator
+guide 3.1; a continuing member never overwrites the file its old process restarts from) and
+start the new process from it (operator guide 6.2). The chain still carries the old version, so the boot check fails
+— `ORACLE_NOT_REGISTERED` for a new member, `ORACLE_INDEX_MISMATCH` or `expectedPublicKey` for a
+continuing one — the process exits and systemd restarts it every few seconds. That is the
+expected state: it signs nothing until governance executes the switch (runbook 5.1 / 5.2), after
+which the next restart passes by itself; nobody has to be at a keyboard at switch time. A
+continuing member runs the new process beside the old one and stops the old one afterwards.
+Keep `wrap.key` plus `member.json` offline as the backup of your share; delete `share.hex` from
+anywhere but the environment file.
 
 ## 8. First ceremony vs rotation
 
@@ -373,8 +377,8 @@ Afterwards keep `wrap.key` plus `member.json` offline as the backup of your shar
 | Version         | `1`                                     | highest existing `ver + 1` (`setpubkey` rejects anything else); never reuse a modulus (`"public key already exist"`) |
 | Indices         | the `setoracles` order governance chose | unchanged for 5.2; new list order for 5.1 — continuing members keep their position where possible                    |
 | Wrapping keys   | fresh                                   | fresh again; never reuse a `wrap.key`                                                                                |
-| Members' action | configure (operator guide 3) and start  | stage the new environment, restart only when 5.1/5.2 says                                                            |
-| Old key         | —                                       | `retirepubkey(<old ver>)` after the drain; old `share.hex` / environment files are then destroyed by each member     |
+| Members' action | configure (operator guide 3) and start  | stage the new environment and start beside the old process; it goes live at the switch (guide 6.2)                   |
+| Old key         | —                                       | `retirepubkey(<old ver>)` after the switch; old `share.hex` / environment files are then destroyed by each member    |
 
 Everything else in sections 4–7 is identical. A rotation is also the only remedy for a lost or
 suspected-compromised share: there is no resharing, so one bad share means a whole new key.
@@ -414,7 +418,8 @@ a public package — a hand-fixed value that passes a check is exactly how a bad
 | Member file + fingerprint (2nd channel) delivered (6)                  |   ✓    |   ✓    |         |            |
 | Unwrap OK, consistency OK, index OK (7)                                |        |   ✓    |         |            |
 | Fingerprint = attestation = proposal modulus (7)                       |        |   ✓    |         |     ✓      |
-| New environment staged, no restart (7)                                 |        |   ✓    |         |            |
+| New environment staged and started, crash-looping as expected (7)      |        |   ✓    |         |            |
 | `setpubkey` proposed from `public-package.json` (6)                    |        |        |         |     ✓      |
-| Drain / switch / restart / resume / retire per runbook 5.1–5.2         |        |   ✓    |         |     ✓      |
+| Pause / drain / switch / retire per runbook 5.1–5.2                    |        |        |         |     ✓      |
+| Rotation only: old process stopped after the switch (7, 8)             |        |   ✓    |         |            |
 | Old shares and environment files destroyed (8)                         |        |   ✓    |         |            |
