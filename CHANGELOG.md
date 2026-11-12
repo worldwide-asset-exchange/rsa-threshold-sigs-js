@@ -4,6 +4,19 @@ All notable changes to `@waxio/rsa-threshold-signatures` are documented here.
 Finding IDs (`SIG-n`) refer to the internal 2026-10 security review of the RNG
 signing library; the release ticket is WBP-2065.
 
+## 2.0.2 — unreleased
+
+- **`tslib` is now a declared runtime dependency.** The package is compiled with
+  `importHelpers`, so `dist/key-encryption.js`, `dist/utils.js` and
+  `dist/threshold-rsa-verifier.js` `require("tslib")`, but 2.0.0 did not list
+  it: a clean `npm install @waxio/rsa-threshold-signatures secp256k1` followed
+  by the KEY-CEREMONY §7 unwrap failed with `Cannot find module 'tslib'`
+  (found by a member operator on 2026-11-12). Consumers that happened to have
+  `tslib` from another dependency never noticed. No code change; signatures
+  and share handling are identical to 2.0.0. (The git tag `v2.0.1` carried
+  `script/wrapShares.ts` only and was never published to npm; this is the next
+  npm release after 2.0.0.) Docs: the install lines in KEY-CEREMONY §4 and §7.
+
 ## 2.0.0 — 2026-10-29
 
 Security-hardening release. For valid inputs, every partial signature and every

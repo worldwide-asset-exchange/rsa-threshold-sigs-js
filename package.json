@@ -1,6 +1,6 @@
 {
   "name": "@waxio/rsa-threshold-signatures",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Library for RSA Threshold signatures",
   "main": "dist/index.js",
   "files": [
@@ -16,7 +16,8 @@
   "author": "wax.io",
   "license": "MIT",
   "dependencies": {
-    "node-forge": "^1.4.0"
+    "node-forge": "^1.4.0",
+    "tslib": "^2.1.0"
   },
   "peerDependencies": {
     "secp256k1": "^5.0.1"

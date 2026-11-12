@@ -63,7 +63,7 @@ accepts the public key as 65-byte uncompressed (`04…`, 130 hex chars) or 33-by
 (`02`/`03…`, 66 hex chars); send the uncompressed form, which is what the library tests use.
 
 On an offline machine, in an empty directory: install
-`npm install @waxio/rsa-threshold-signatures@2.0.0 secp256k1@5` while online (section 7 needs
+`npm install @waxio/rsa-threshold-signatures@2.0.2 secp256k1@5` (on 2.0.0 add `tslib` to that line; it was missing from the package's dependencies) while online (section 7 needs
 both), then disconnect, then generate `wrap.key`:
 
 ```bash
@@ -304,7 +304,7 @@ fingerprint.
 ## 7. Member verification and staging
 
 On the offline machine from section 4, with `wrap.key`, the received `member.json`, and
-`npm install @waxio/rsa-threshold-signatures@2.0.0 secp256k1@5` done (online, before the file is
+`npm install @waxio/rsa-threshold-signatures@2.0.2 secp256k1@5` (on 2.0.0 add `tslib` to that line; it was missing from the package's dependencies) done (online, before the file is
 brought over). Unwrap:
 
 ```bash
